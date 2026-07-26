@@ -1623,6 +1623,9 @@ fn encode_path(path: &Path) -> Vec<u8> {
 }
 
 #[cfg(unix)]
+// Windows rejects odd UTF-16 payloads; keeping one fallible decoder signature
+// makes the format reader identical on every platform.
+#[allow(clippy::unnecessary_wraps)]
 fn decode_path(bytes: &[u8]) -> std::result::Result<PathBuf, &'static str> {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
