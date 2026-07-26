@@ -24,16 +24,16 @@ pub use index::{
 #[cfg(feature = "live")]
 pub use live_index::{LiveIndex, LiveIndexBuilder, LiveIndexOptions, LiveIndexStatus};
 pub use options::{
-    ArchiveOptions, BinaryPolicy, CaseMode, EncodingMode, ResultMode, SearchErrorPolicy,
-    SearchMode, SearchOptions,
+    ArchiveOptions, BinaryPolicy, CaseMode, EncodingMode, FileEvidenceMode, ResultMode,
+    SearchErrorPolicy, SearchMode, SearchOptions,
 };
 pub use output::{
     ColorChoice, OutputFormat, OutputOptions, write_report, write_report_with, write_warnings,
 };
 pub use query::SearchQuery;
 pub use report::{
-    ContextLine, IndexSearchEvidence, MatchSpan, MatchedFile, SearchBackend, SearchMatch,
-    SearchReport, SearchWarning, SearchWarningKind,
+    ContextLine, FileEvidenceVisitor, IndexSearchEvidence, MatchSpan, MatchedFile, SearchBackend,
+    SearchMatch, SearchReport, SearchWarning, SearchWarningKind, SourceFileEvidence,
 };
 pub use searcher::Searcher;
 pub use weavatrix_scan::{

@@ -103,11 +103,7 @@ impl Searcher {
         is_streaming_utf8(&self.options.encoding)?;
         let query = Arc::new(self.query.compile(self.options.case)?);
         let options = Arc::new(self.options);
-        let collector = Arc::new(Collector::new(
-            options.max_results,
-            options.max_warnings,
-            options.result_mode,
-        ));
+        let collector = Arc::new(Collector::new(&options));
         let worker_query = Arc::clone(&query);
         let worker_options = Arc::clone(&options);
         let worker_collector = Arc::clone(&collector);
@@ -135,6 +131,7 @@ impl Searcher {
                             SearchIdentity {
                                 root_index: opened.root_index,
                                 path: opened.relative.to_owned(),
+                                source_bytes: opened.bytes,
                                 encoding: "UTF-8".into(),
                                 archive: false,
                                 source_offset_base: Some(0),
@@ -189,6 +186,8 @@ impl Searcher {
             truncated: collected.truncated,
             warnings: collected.warnings,
             matched_files: collected.files,
+            file_evidence: collected.file_evidence,
+            file_evidence_truncated: collected.file_evidence_truncated,
             warnings_dropped: collected.warnings_dropped,
             scan,
         })
@@ -217,11 +216,7 @@ pub(crate) fn search_indexed(
     is_streaming_utf8(&options.encoding)?;
     let query = Arc::new(query.compile(options.case)?);
     let options = Arc::new(options);
-    let collector = Arc::new(Collector::new(
-        options.max_results,
-        options.max_warnings,
-        options.result_mode,
-    ));
+    let collector = Arc::new(Collector::new(&options));
     let next = Arc::new(AtomicUsize::new(0));
     let completed = Arc::new(
         (0..roots.len())
@@ -266,6 +261,7 @@ pub(crate) fn search_indexed(
                         SearchIdentity {
                             root_index: file.root_index,
                             path: file.path.to_owned(),
+                            source_bytes: expected_bytes,
                             encoding: "UTF-8".into(),
                             archive: false,
                             source_offset_base: Some(0),
@@ -357,6 +353,8 @@ pub(crate) fn search_indexed(
         truncated: collected.truncated,
         warnings: collected.warnings,
         matched_files: collected.files,
+        file_evidence: collected.file_evidence,
+        file_evidence_truncated: collected.file_evidence_truncated,
         warnings_dropped: collected.warnings_dropped,
         scan: MultiContentVisitReport { reports },
     })
@@ -580,7 +578,10 @@ impl FileProcessor {
                 if let Some(kind) = self.archive {
                     archive::search(
                         kind,
-                        &self.identity.as_ref().expect("identity exists").path,
+                        (
+                            self.identity.as_ref().expect("identity exists").root_index,
+                            &self.identity.as_ref().expect("identity exists").path,
+                        ),
                         &bytes,
                         &self.query,
                         query_cache,

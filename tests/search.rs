@@ -3,9 +3,10 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use weavatrix_search::{
-    CaseMode, EncodingMode, Error, ResultMode, SearchMode, SearchOptions, SearchQuery,
-    SearchWarningKind, Searcher,
+    CaseMode, EncodingMode, Error, FileEvidenceMode, ResultMode, SearchMode, SearchOptions,
+    SearchQuery, SearchWarningKind, Searcher,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -67,6 +68,61 @@ fn literal_search_streams_long_lines_and_keeps_context() {
     assert_eq!(report.matches[0].spans[0].start, 65_534);
     assert_eq!(report.matches[0].decoded_byte_offset, 7);
     assert_eq!(report.matches[0].source_byte_offset, Some(7));
+}
+
+#[test]
+fn file_evidence_is_single_pass_deterministic_and_streamable() {
+    let repo = TempRepo::new("file-evidence");
+    repo.write("z.txt", b"miss\n");
+    repo.write("a.txt", b"needle\nsecond");
+    repo.write("empty.txt", b"");
+    let streamed = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&streamed);
+
+    let report = Searcher::new(repo.path(), SearchQuery::literal("needle"))
+        .options(
+            SearchOptions::default()
+                .with_file_evidence(FileEvidenceMode::All)
+                .with_max_file_evidence(2)
+                .with_file_evidence_visitor(move |evidence| {
+                    sink.lock().unwrap().push(evidence.clone());
+                }),
+        )
+        .search()
+        .unwrap();
+
+    assert_eq!(report.files_searched, 3);
+    assert!(report.file_evidence_truncated);
+    assert_eq!(
+        report
+            .file_evidence
+            .iter()
+            .map(|evidence| evidence.path.as_str())
+            .collect::<Vec<_>>(),
+        ["a.txt", "empty.txt"]
+    );
+    assert_eq!(report.file_evidence[0].source_bytes, 13);
+    assert_eq!(report.file_evidence[0].total_lines, 2);
+    assert_eq!(report.file_evidence[0].matching_lines, 1);
+    assert_eq!(report.file_evidence[1].source_bytes, 0);
+    assert_eq!(report.file_evidence[1].total_lines, 0);
+
+    let mut streamed = Arc::try_unwrap(streamed).unwrap().into_inner().unwrap();
+    streamed.sort_unstable_by(|left, right| left.path.cmp(&right.path));
+    assert_eq!(streamed.len(), 3);
+    assert_eq!(streamed[2].path, "z.txt");
+    assert_eq!(streamed[2].total_lines, 1);
+
+    let matched = Searcher::new(repo.path(), SearchQuery::literal("needle"))
+        .options(
+            SearchOptions::default()
+                .with_file_evidence(FileEvidenceMode::Matched)
+                .with_max_file_evidence(10),
+        )
+        .search()
+        .unwrap();
+    assert_eq!(matched.file_evidence.len(), 1);
+    assert_eq!(matched.file_evidence[0].path, "a.txt");
 }
 
 #[test]
@@ -148,6 +204,7 @@ fn multiline_query_merges_overlapping_line_blocks_and_keeps_context() {
     .options(
         SearchOptions::default()
             .with_mode(SearchMode::Multiline)
+            .with_file_evidence(FileEvidenceMode::All)
             .with_context(1, 1),
     )
     .search()
@@ -172,6 +229,8 @@ fn multiline_query_merges_overlapping_line_blocks_and_keeps_context() {
     );
     assert_eq!(found.before[0].text, "before");
     assert_eq!(found.after[0].text, "after");
+    assert_eq!(report.file_evidence[0].total_lines, 4);
+    assert_eq!(report.file_evidence[0].source_bytes, 25);
 }
 
 #[test]
@@ -295,6 +354,7 @@ fn auto_encoding_detects_utf16_bom() {
         .options(
             SearchOptions::default()
                 .with_encoding(EncodingMode::Auto)
+                .with_file_evidence(FileEvidenceMode::All)
                 .with_context(1, 0),
         )
         .search()
@@ -306,6 +366,9 @@ fn auto_encoding_detects_utf16_bom() {
     assert_eq!(report.matches[0].before[0].text, "first");
     assert_eq!(report.matches[0].decoded_byte_offset, 6);
     assert_eq!(report.matches[0].source_byte_offset, None);
+    assert_eq!(report.file_evidence[0].encoding, "UTF-16LE");
+    assert_eq!(report.file_evidence[0].source_bytes, 38);
+    assert_eq!(report.file_evidence[0].total_lines, 2);
 }
 
 #[test]
@@ -398,6 +461,11 @@ fn searches_zip_tar_and_gzip_without_extracting() {
     gzip.finish().unwrap();
 
     let report = Searcher::new(repo.path(), SearchQuery::literal("needle"))
+        .options(
+            SearchOptions::default()
+                .with_file_evidence(FileEvidenceMode::All)
+                .with_max_file_evidence(10),
+        )
         .search()
         .unwrap();
 
@@ -429,4 +497,41 @@ fn searches_zip_tar_and_gzip_without_extracting() {
             && warning.path.contains("sample.zip!nested/binary.bin")
     }));
     assert!(report.matches.iter().all(|found| found.archive));
+    assert_eq!(report.file_evidence.len(), 3);
+    assert!(
+        report
+            .file_evidence
+            .iter()
+            .all(|evidence| evidence.archive && evidence.total_lines >= 1)
+    );
+}
+
+#[cfg(feature = "archives")]
+#[test]
+fn archive_evidence_preserves_multi_root_identity() {
+    let first = TempRepo::new("archive-root-first");
+    let second = TempRepo::new("archive-root-second");
+    first.write("plain.txt", b"unrelated\n");
+    let archive_path = second.path().join("source.zip");
+    let archive_file = fs::File::create(archive_path).unwrap();
+    let mut archive = zip::ZipWriter::new(archive_file);
+    archive
+        .start_file("member.txt", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    archive.write_all(b"needle\n").unwrap();
+    archive.finish().unwrap();
+
+    let report = Searcher::new(first.path(), SearchQuery::literal("needle"))
+        .add_root(second.path())
+        .options(SearchOptions::default().with_file_evidence(FileEvidenceMode::All))
+        .search()
+        .unwrap();
+
+    let member = report
+        .file_evidence
+        .iter()
+        .find(|evidence| evidence.archive)
+        .unwrap();
+    assert_eq!(member.root_index, 1);
+    assert_eq!(member.total_lines, 1);
 }

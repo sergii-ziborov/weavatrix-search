@@ -1,6 +1,6 @@
 use crate::archive;
 use crate::error::{Error, Result};
-use crate::options::{EncodingMode, SearchOptions};
+use crate::options::{EncodingMode, FileEvidenceMode, SearchOptions};
 use crate::query::SearchQuery;
 use crate::report::SearchReport;
 use crate::searcher::{IndexedContent, search_indexed};
@@ -831,9 +831,15 @@ impl PersistentIndex {
                 "search parallelism must be greater than zero",
             ));
         }
-        let alternatives = match options.encoding {
-            EncodingMode::Auto | EncodingMode::Utf8 => query.prefilter_trigrams(options.case),
-            EncodingMode::Utf16Le | EncodingMode::Utf16Be | EncodingMode::Label(_) => None,
+        let needs_every_file = options.file_evidence == FileEvidenceMode::All
+            || options.file_evidence_visitor.is_some();
+        let alternatives = if needs_every_file {
+            None
+        } else {
+            match options.encoding {
+                EncodingMode::Auto | EncodingMode::Utf8 => query.prefilter_trigrams(options.case),
+                EncodingMode::Utf16Le | EncodingMode::Utf16Be | EncodingMode::Label(_) => None,
+            }
         };
         let files = self
             .entries

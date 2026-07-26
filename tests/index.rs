@@ -4,8 +4,8 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use weavatrix_scan::{ContentValidationPolicy, ScanOptions};
 use weavatrix_search::{
-    CaseMode, IndexBuilder, IndexOptions, PersistentIndex, SearchBackend, SearchOptions,
-    SearchQuery, Searcher, WatchEvent, WatchEventKind, WatchPlan,
+    CaseMode, FileEvidenceMode, IndexBuilder, IndexOptions, PersistentIndex, SearchBackend,
+    SearchOptions, SearchQuery, Searcher, WatchEvent, WatchEventKind, WatchPlan,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -110,6 +110,38 @@ fn persistent_index_round_trips_and_preserves_filesystem_results() {
     assert_eq!(
         matched_paths(&reopened.search(query, options).unwrap()),
         matched_paths(&filesystem)
+    );
+}
+
+#[test]
+fn all_file_evidence_disables_index_prefilter_without_losing_metrics() {
+    let repo = TempRepo::new("file-evidence");
+    repo.write("match.txt", b"needle\nsecond");
+    repo.write("miss.txt", b"unrelated\n");
+    repo.write("empty.txt", b"");
+    let (index, build) =
+        PersistentIndex::build([repo.path()], scan_options(), IndexOptions::default()).unwrap();
+
+    let report = index
+        .search(
+            SearchQuery::literal("needle"),
+            SearchOptions::default()
+                .with_file_evidence(FileEvidenceMode::All)
+                .with_max_file_evidence(10),
+        )
+        .unwrap();
+
+    let index_evidence = report.index.as_ref().unwrap();
+    assert!(!index_evidence.prefiltered);
+    assert_eq!(index_evidence.candidate_files, build.files);
+    assert_eq!(report.file_evidence.len(), 3);
+    assert_eq!(
+        report
+            .file_evidence
+            .iter()
+            .map(|evidence| (evidence.path.as_str(), evidence.total_lines))
+            .collect::<Vec<_>>(),
+        [("empty.txt", 0), ("match.txt", 2), ("miss.txt", 1)]
     );
 }
 

@@ -1,3 +1,6 @@
+use std::fmt;
+use std::sync::Arc;
+
 /// Backend that supplied bytes for one search execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchBackend {
@@ -119,6 +122,60 @@ pub struct MatchedFile {
     pub archive: bool,
 }
 
+/// Per-source text metrics produced during the same content pass as matching.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFileEvidence {
+    /// Root insertion index.
+    pub root_index: usize,
+    /// Normalized path, or `archive!member` virtual path.
+    pub path: String,
+    /// Raw bytes read for this source or expanded archive member.
+    pub source_bytes: u64,
+    /// Decoded logical lines. Empty input contains zero lines.
+    pub total_lines: u64,
+    /// Distinct physical lines covered by matches.
+    pub matching_lines: u64,
+    /// Non-overlapping match occurrences.
+    pub occurrences: u64,
+    /// Effective decoder name.
+    pub encoding: String,
+    /// Whether malformed input required replacement characters.
+    pub lossy: bool,
+    /// Whether `path` addresses a virtual archive member.
+    pub archive: bool,
+}
+
+/// Thread-safe streaming callback for completed [`SourceFileEvidence`].
+///
+/// Calls may arrive concurrently and in completion order. Consumers that need
+/// deterministic order can retain evidence in [`SearchReport::file_evidence`].
+#[derive(Clone)]
+pub struct FileEvidenceVisitor {
+    callback: Arc<dyn Fn(&SourceFileEvidence) + Send + Sync + 'static>,
+}
+
+impl FileEvidenceVisitor {
+    /// Wraps a thread-safe callback without retaining per-file records.
+    pub fn new<F>(callback: F) -> Self
+    where
+        F: Fn(&SourceFileEvidence) + Send + Sync + 'static,
+    {
+        Self {
+            callback: Arc::new(callback),
+        }
+    }
+
+    pub(crate) fn visit(&self, evidence: &SourceFileEvidence) {
+        (self.callback)(evidence);
+    }
+}
+
+impl fmt::Debug for FileEvidenceVisitor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("FileEvidenceVisitor(..)")
+    }
+}
+
 /// Deterministic matches, aggregate counters, warnings, and scan evidence.
 #[derive(Debug)]
 pub struct SearchReport {
@@ -151,6 +208,10 @@ pub struct SearchReport {
     /// Retained per-file summaries in deterministic order for count and files
     /// modes.
     pub matched_files: Vec<MatchedFile>,
+    /// Optional completed-source metrics sorted by root and path.
+    pub file_evidence: Vec<SourceFileEvidence>,
+    /// Whether completed-source metrics were omitted by `max_file_evidence`.
+    pub file_evidence_truncated: bool,
     /// Number of warnings omitted by `max_warnings`.
     pub warnings_dropped: u64,
     /// Per-root scanner evidence and cancellation state in insertion order.
