@@ -1,0 +1,61 @@
+[package]
+name = "weavatrix-search"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Fast, bounded repository content search built on Weavatrix Scan"
+license = "MIT"
+authors = ["Sergii Ziborov <sergii.ziborov@gmail.com>"]
+homepage = "https://weavatrix.com"
+repository = "https://github.com/sergii-ziborov/weavatrix-search"
+documentation = "https://docs.rs/weavatrix-search"
+readme = "README.md"
+exclude = ["target-*", "bench-fixtures"]
+keywords = ["search", "repository", "regex", "code-search", "weavatrix"]
+categories = ["development-tools", "text-processing", "filesystem"]
+
+[dependencies]
+encoding_rs = "0.8.35"
+memchr = "2.8.3"
+regex-automata = "0.4.16"
+regex-syntax = "0.8.8"
+weavatrix-scan = "0.4.1"
+flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"], optional = true }
+tar = { version = "0.4.46", default-features = false, optional = true }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"], optional = true }
+brotli-decompressor = { version = "5.0.3", default-features = true, optional = true }
+bzip2-rs = { version = "0.1.2", default-features = false, optional = true }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "frame", "safe-encode", "safe-decode", "checked-decode"], optional = true }
+lzma-rs = { version = "0.3.0", default-features = false, optional = true }
+ruzstd = { version = "0.8.3", default-features = false, features = ["std"], optional = true }
+xz4rust = { version = "0.2.2", default-features = false, features = ["std", "bcj", "crc64", "delta", "sha256"], optional = true }
+
+[dev-dependencies]
+banzai = "0.3.1"
+brotli = { version = "8.0.4", default-features = true }
+serde_json = "1.0.151"
+
+[features]
+default = ["archives"]
+archives = [
+    "dep:brotli-decompressor",
+    "dep:bzip2-rs",
+    "dep:flate2",
+    "dep:lz4_flex",
+    "dep:lzma-rs",
+    "dep:ruzstd",
+    "dep:tar",
+    "dep:xz4rust",
+    "dep:zip",
+]
+
+[[bench]]
+name = "compare_ripgrep"
+harness = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

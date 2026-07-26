@@ -1,0 +1,34 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - benches/**
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
+
+permissions:
+  contents: read
+
+jobs:
+  ripgrep-parity:
+    name: ripgrep parity (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install stable Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Verify ripgrep
+        run: rg --version
+      - name: Run output-equivalent benchmark
+        env:
+          WEAVATRIX_SEARCH_BENCH_RUNS: 5
+          WEAVATRIX_SEARCH_BENCH_WARMUPS: 1
+        run: cargo +stable bench --bench compare_ripgrep
