@@ -12,7 +12,7 @@ appropriate for repositories containing hundreds of thousands of files.
 
 ## Status
 
-The `0.1.0` release contract covers:
+The `0.1.1` release contract covers:
 
 - ordered literal/regex query sets in one content pass;
 - line-streaming and explicitly bounded multiline matching;
@@ -186,8 +186,20 @@ can dominate. A true cold-cache number requires controlled cache eviction or a
 reboot and is deliberately not inferred from warm runs. Repeated subsecond
 queries over 200,000+ files require a persistent/live index; that belongs in a
 future indexing layer rather than weakening Scan's filesystem evidence.
-Linux and macOS runtime measurements remain an evidence gap; CI runs the same
-parity benchmark natively on all three operating systems.
+
+The native CI parity run uses a generated 5,500-file selected corpus, five
+measured runs after one warmup, ripgrep `15.2.0`, and the same normalized output
+assertion. Hosted-runner timings are indicative and must only be compared within
+the same row:
+
+| GitHub runner | Weavatrix Search literal | ripgrep literal | Outcome |
+| --- | ---: | ---: | --- |
+| Windows | **96.0 ms** | 165.0 ms | Weavatrix 1.72x faster |
+| macOS ARM64 | **27.5 ms** | 49.2 ms | Weavatrix 1.79x faster |
+| Ubuntu | 26.8 ms | **20.1 ms** | ripgrep 1.34x faster |
+
+All three native jobs also pass exact-result parity for literal, regex,
+query-set, multiline, count, and files-with-matches modes.
 
 To reproduce the end-to-end rows:
 
@@ -213,7 +225,7 @@ The installed ripgrep 15.2 binary measured 4,218,880 bytes and included PCRE2.
 These are uncompressed executable sizes for those exact builds, not portable
 package-size guarantees. Archive support is feature-gated when a smaller
 consumer is more important than in-process compressed search. Verified package
-size is 23 files, 226.1 KiB unpacked / 49.8 KiB compressed; dependency source
+size is 25 files, 227.0 KiB unpacked / 50.2 KiB compressed; dependency source
 is excluded.
 
 ## Safety

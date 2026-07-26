@@ -1,6 +1,6 @@
 [package]
 name = "weavatrix-search"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Fast, bounded repository content search built on Weavatrix Scan"
@@ -10,7 +10,7 @@ homepage = "https://weavatrix.com"
 repository = "https://github.com/sergii-ziborov/weavatrix-search"
 documentation = "https://docs.rs/weavatrix-search"
 readme = "README.md"
-exclude = ["target-*", "bench-fixtures"]
+exclude = [".github", "target-*", "bench-fixtures"]
 keywords = ["search", "repository", "regex", "code-search", "weavatrix"]
 categories = ["development-tools", "text-processing", "filesystem"]
 

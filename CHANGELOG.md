@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 0.1.1 - 2026-07-26
+
+- Publish native Windows, macOS ARM64, and Ubuntu ripgrep parity medians.
+- Install the pinned ripgrep `15.2.0` competitor in benchmark CI.
+- Exclude CI configuration from the crates.io package.
+
 ## 0.1.0 - 2026-07-26
 
 - Establish bounded literal and regular-expression repository search on top of
