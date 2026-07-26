@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub(crate) struct SearchIdentity {
     pub(crate) root_index: usize,
     pub(crate) path: String,
+    pub(crate) source_bytes: u64,
     pub(crate) encoding: Cow<'static, str>,
     pub(crate) archive: bool,
     pub(crate) source_offset_base: Option<u64>,
@@ -157,6 +158,7 @@ impl LineSearcher {
     }
 
     pub(crate) fn finish(mut self, query_cache: &mut QueryCache) {
+        let has_unterminated_line = !self.pending_bytes.is_empty() || self.discarding_long_line;
         if !self.pending_bytes.is_empty() && !self.discarding_long_line {
             let line = std::mem::take(&mut self.pending_bytes);
             self.process_line(&line, self.pending_offset, query_cache);
@@ -164,11 +166,19 @@ impl LineSearcher {
         for pending in self.pending_matches.drain(..) {
             self.collector.retain_match(pending.found);
         }
+        let total_lines = self
+            .line_number
+            .saturating_sub(1)
+            .saturating_add(u64::from(has_unterminated_line));
         self.collector.finish_file(FileSummary {
             root_index: self.identity.root_index,
             path: self.identity.path,
+            source_bytes: self.identity.source_bytes,
+            total_lines,
             matching_lines: self.matching_lines,
             occurrences: self.occurrences,
+            encoding: self.identity.encoding,
+            lossy: self.identity.lossy,
             archive: self.identity.archive,
         });
     }

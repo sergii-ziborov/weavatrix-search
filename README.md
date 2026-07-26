@@ -15,10 +15,12 @@ verified by the normal search engine.
 
 ## Status
 
-The `0.2.1` release contract covers:
+The `0.3.0` release contract covers:
 
-- low-latency buffered-parallel discovery with the same Scan selection and
-  opened-handle validation contract as constant-memory streaming;
+- adaptive discovery: low-latency buffered traversal for repository roots and
+  ordinary Unix directories, plus overlapped constant-memory streaming for
+  broad Windows roots and filesystem roots, with the same Scan selection and
+  opened-handle validation contract;
 - one compiled literal finder per query and allocation-free common UTF-8
   encoding evidence until a match is retained;
 - ordered literal/regex query sets in one content pass;
@@ -31,6 +33,11 @@ The `0.2.1` release contract covers:
 - binary, file, line, archive-entry, expansion, cancellation, result, and
   warning limits;
 - deterministic output under parallel traversal;
+- optional `SourceFileEvidence` with source bytes, logical lines, matching
+  lines, occurrences, encoding, and stable root/path identity, computed in the
+  same content pass;
+- deterministic bounded evidence retention or a concurrent zero-retention
+  callback for Graph and hosted indexing;
 - match, aggregate-count, matched-file, and early-exit result modes;
 - a parallel multi-root API and CLI with stable root identity;
 - stable JSON Lines plus configurable text headings, colors, line/column
@@ -62,6 +69,36 @@ for found in report.matches {
 }
 # Ok::<(), weavatrix_search::Error>(())
 ```
+
+Search can emit file size and line-count evidence for Graph without rereading
+source files or retaining one record per file:
+
+```rust,no_run
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use weavatrix_search::{SearchOptions, SearchQuery, Searcher};
+
+let lines = Arc::new(AtomicU64::new(0));
+let sink = Arc::clone(&lines);
+let options = SearchOptions::default().with_file_evidence_visitor(move |file| {
+    sink.fetch_add(file.total_lines, Ordering::Relaxed);
+});
+let report = Searcher::new(".", SearchQuery::literal("SelectionMatcher"))
+    .options(options)
+    .search()?;
+
+println!(
+    "{} files, {} bytes, {} lines",
+    report.files_searched,
+    report.bytes_searched,
+    lines.load(Ordering::Relaxed)
+);
+# Ok::<(), weavatrix_search::Error>(())
+```
+
+The callback may run concurrently in completion order. Consumers that require
+deterministic root/path order can retain `FileEvidenceMode::Matched` or
+`FileEvidenceMode::All`, bounded independently by `max_file_evidence`.
 
 Repeated queries use a discoverable builder and the same `SearchQuery` /
 `SearchOptions` contract:
@@ -147,10 +184,11 @@ weavatrix-search --replace '${last}, ${first}' \
 Core flags cover repeated patterns, literal/regex selection, sensitive,
 insensitive and smart case, context, multiline, count/files/quiet modes,
 replacement preview, encoding labels, selection globs, hidden paths, archive
-control, multiple roots, headings, color, line/column fields, only-matching
-records, NUL paths, statistics, and resource limits. Exit status is `0` for a
-match, `1` for no match, and `2` for usage, search, or output failure. Search
-roots remain native `OsString` paths; patterns and glob programs are UTF-8.
+control, adaptive/streaming/buffered discovery, bounded content workers,
+multiple roots, headings, color, line/column fields, only-matching records,
+NUL paths, statistics, and resource limits. Exit status is `0` for a match,
+`1` for no match, and `2` for usage, search, or output failure. Search roots
+remain native `OsString` paths; patterns and glob programs are UTF-8.
 `--index PATH` builds a missing index or reuses a validated snapshot;
 `--rebuild-index` refreshes it explicitly, `--index-workers` bounds build/query
 parallelism, and `--index-status` prints revision/file/byte/root evidence.
@@ -161,13 +199,16 @@ can own process lifetime, cancellation, and health reporting.
 
 ```text
 weavatrix-scan
-  -> ignore-aware buffered-parallel discovery
+  -> adaptive ignore-aware discovery
+       repository/ordinary Unix root -> buffered parallel traversal
+       Windows broad/filesystem root  -> constant-memory streaming
   -> safe parallel file open
   -> borrowed byte chunks
   -> per-worker single/query-set automata state
   -> streaming lines or bounded multiline decode
-  -> context/encoding/archive/replacement evidence
+  -> context/encoding/archive/replacement/file evidence
   -> deterministic bounded collector
+       or concurrent zero-retention evidence callback
 
 persistent/live mode
   -> one exact content snapshot + hashes + revision
@@ -189,8 +230,9 @@ counts remain complete when records are omitted.
   revisions, watcher deltas.
 - **Weavatrix Search:** literal/regex sets, line and multiline matching,
   context, encodings, archives, and search-result modes.
-- **Weavatrix Vector:** a later independent repository for exact and ANN vector
-  candidate search.
+- **Weavatrix Search Vector:** a later independent
+  `weavatrix-search-vector` repository for exact and ANN vector candidate
+  search; Weavatrix Semantic may use it, but it does not depend on Semantic.
 - **Weavatrix Clone:** a later independent repository for token and clone
   detection.
 
@@ -210,6 +252,7 @@ compression libraries, helper executables, or FFI bindings.
 | Git-ignore-aware parallel repository search | Via Weavatrix Scan | Yes | Covered |
 | Literal/regex, smart case, lines, context | Yes | Yes | Covered |
 | Deterministic bounded records and warnings | Yes | Output is streamed | Weavatrix-specific |
+| Per-source bytes, logical lines, encoding, match totals | Same-pass typed evidence; retained or streamed | No public typed CLI contract | Weavatrix-specific |
 | UTF-8, UTF-16, explicit encoding labels | Yes | Yes | Covered |
 | ZIP/TAR member search without extraction | Yes | Compressed-stream search | Weavatrix-specific |
 | Library-first typed evidence API | Yes | Internal crates/CLI | Weavatrix-specific |
@@ -233,13 +276,14 @@ Graph, Clone, and hosted indexing without spawning another executable.
 
 ## Windows end-to-end benchmark
 
-Subsecond uncached search is not a universal filesystem guarantee. Subsecond
-warm-cache search is already practical for ordinary large repositories, and
-ripgrep can also achieve it. The differentiated result is keeping that speed
-inside a bounded, typed Rust pipeline.
+Subsecond uncached search is not a universal filesystem guarantee. A warm
+ordinary traversal can stay below one second on smaller repositories or faster
+filesystems, and ripgrep can also achieve it. At 200k files on this Windows
+host, stable subsecond repeated search comes from the persistent/live index,
+while the ordinary filesystem path remains the no-index fallback.
 
 The reference run used Windows 11 Enterprise `10.0.26200`, an Intel Core Ultra
-7 255U, Rust `1.97.1`, release builds, crates.io `weavatrix-scan 0.4.1`, and
+7 255U, Rust `1.97.1`, release builds, crates.io `weavatrix-scan 0.4.2`, and
 ripgrep `15.2.0`. Both tools were separate CLI processes and emitted JSON.
 Before timing, the benchmark asserts identical normalized path, line, and
 submatch-span records. Timing includes startup, ignore-aware discovery, content
@@ -254,16 +298,27 @@ cache was warm.
 | Corpus | Selected / matching | Weavatrix Search | ripgrep | Outcome |
 | --- | ---: | ---: | ---: | --- |
 | 20,000 files | 19,500 / 975 | **292.5 ms** | 399.7 ms | Weavatrix 1.37x faster; both below 1 s |
-| 200,000 files | 199,500 / 9,975 | **3,859.4 ms** | 6,212.9 ms | Weavatrix 1.61x faster |
+| 200,000 files | 199,500 / 9,975 | **3,181.4 ms** | 7,507.9 ms | Weavatrix 2.36x faster |
 
 This does not claim that every repository or query is faster. Antivirus,
 storage, cache state, file size, output volume, encoding, and regex complexity
 can dominate. A true cold-cache number requires controlled cache eviction or a
 reboot and is deliberately not inferred from warm runs.
 
+The refreshed `0.3.0` 200k row uses adaptive broad-root streaming with 32
+bounded readers. The first uncontrolled cold touch on the same fixture took
+about 30 seconds while later passes took 3–5 seconds, demonstrating why a
+single cold observation is not mixed into the warm-cache median.
+
+File evidence does not introduce a second read. On a separate 5,500-file
+Windows fixture, five measured runs after one warmup produced 92.5 ms for the
+default literal search, 91.4 ms with the zero-retention evidence callback, and
+96.9 ms while retaining all evidence; the paired ripgrep literal run was
+155.4 ms. These modes searched identical content and logical-line totals.
+
 ### Persistent/live index benchmark
 
-The `0.2.1` index closes the repeated-query gap without weakening Scan's
+The persistent index closes the repeated-query gap without weakening Scan's
 filesystem evidence. The benchmark first builds and atomically saves an exact
 snapshot, opens it with full format/checksum/revision validation, asserts exact
 normalized path/line/span parity against ripgrep, then times resident queries.
@@ -271,17 +326,17 @@ The literal has 975 matches at 20k and 9,975 at 200k; in this synthetic corpus
 the Bloom filter admitted exactly those matching files.
 
 The 20k row is the published `0.2.0` reference and uses seven measured
-interleaved runs after two warmups. The refreshed 200k `0.2.1` row uses five
+interleaved runs after two warmups. The refreshed 200k `0.3.0` row uses five
 resident queries and updates after one warmup on the same disclosed Windows
 host. It includes a fresh ripgrep parity/timing pass on the same corpus.
 
 | Corpus | Serialized index | Build | Validated open | Resident query | One-file live update | ripgrep process |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 20,000 files (19,502 indexed) | 3.21 MB | 578.5 ms | 55.6 ms | **15.7 ms** | **9.3 ms** | 785.1 ms |
-| 200,000 files (199,502 indexed) | 33.07 MB | 2,992.3 ms | **418.5 ms** | **23.5 ms** | **31.2 ms** | 5,082.8 ms |
+| 200,000 files (199,502 indexed) | 33.07 MB | 3,031.5 ms | **492.3 ms** | **24.4 ms** | **15.9 ms** | 4,927.2 ms |
 
-Thus even a fresh validated open plus query remained about 442 ms at 200k;
-an already resident query was about 23.5 ms. This is a scenario distinction,
+Thus even a fresh validated open plus query remained about 517 ms at 200k;
+an already resident query was about 24.4 ms. This is a scenario distinction,
 not a claim that the literal engine is universally 200x faster: the 20k
 resident result avoids process startup and repository traversal by design,
 while the ripgrep CLI repeats both. Index RAM intentionally retains exact
@@ -343,9 +398,13 @@ WEAVATRIX_SEARCH_BENCH_WARMUPS=2 WEAVATRIX_SEARCH_BENCH_RUNS=7 \
 
 Use `200000`, one warmup, and five runs for the scale row. In PowerShell, set
 the variables through `$env:WEAVATRIX_SEARCH_BENCH_WARMUPS` and
-`$env:WEAVATRIX_SEARCH_BENCH_RUNS`. The separate `run` mode profiles the
-in-process API across literal, regex, query-set, multiline, count, and file
-workloads while checking output parity.
+`$env:WEAVATRIX_SEARCH_BENCH_RUNS`. Set
+`WEAVATRIX_SEARCH_BENCH_DISCOVERY=streaming` and
+`WEAVATRIX_SEARCH_BENCH_THREADS=32` to reproduce the Windows broad-root API
+profile; `run-cli` uses the binary's adaptive policy directly. The separate
+`run` mode profiles the in-process API across literal, regex, query-set,
+multiline, count, file, and per-source-evidence workloads while checking
+output parity.
 
 ## Footprint
 

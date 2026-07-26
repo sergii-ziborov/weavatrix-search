@@ -3,13 +3,15 @@ use std::fs;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use weavatrix_scan::{
     ContentDiscoveryMode, ContentValidationPolicy, ContentVisitControl, ScanOptions, Scanner,
 };
 use weavatrix_search::{
-    CaseMode, IndexOptions, PersistentIndex, ResultMode, SearchMode, SearchOptions, SearchQuery,
-    Searcher, WatchEvent, WatchEventKind,
+    CaseMode, FileEvidenceMode, IndexOptions, PersistentIndex, ResultMode, SearchMode,
+    SearchOptions, SearchQuery, Searcher, WatchEvent, WatchEventKind,
 };
 
 const MARKER: &str = ".weavatrix-search-benchmark";
@@ -237,6 +239,7 @@ fn run(root: &Path) {
         runs,
         warmups,
     );
+    profile_file_evidence(root, runs, warmups);
     profile(
         root,
         &Workload {
@@ -278,6 +281,77 @@ fn run(root: &Path) {
     );
     profile_count(root, runs, warmups);
     profile_files(root, runs, warmups);
+}
+
+fn profile_file_evidence(root: &Path, runs: usize, warmups: usize) {
+    let expected = evidence_search(root, false);
+    let retained_expected = evidence_search(root, true);
+    assert_eq!(expected, retained_expected);
+    for _ in 0..warmups {
+        black_box(evidence_search(root, false));
+        black_box(evidence_search(root, true));
+    }
+    let mut streaming = Vec::with_capacity(runs);
+    let mut retained = Vec::with_capacity(runs);
+    for index in 0..runs {
+        if index % 2 == 0 {
+            streaming.push(timed(|| evidence_search(root, false), &expected));
+            retained.push(timed(|| evidence_search(root, true), &expected));
+        } else {
+            retained.push(timed(|| evidence_search(root, true), &expected));
+            streaming.push(timed(|| evidence_search(root, false), &expected));
+        }
+    }
+    println!(
+        "mode=file-evidence-stream engine=weavatrix-search files={} logical_lines={} median_ms={:.3}",
+        expected.0,
+        expected.1,
+        millis(median(&mut streaming))
+    );
+    println!(
+        "mode=file-evidence-retained engine=weavatrix-search files={} logical_lines={} median_ms={:.3}",
+        expected.0,
+        expected.1,
+        millis(median(&mut retained))
+    );
+}
+
+fn evidence_search(root: &Path, retain: bool) -> (u64, u64) {
+    let counters = Arc::new((AtomicU64::new(0), AtomicU64::new(0)));
+    let sink = Arc::clone(&counters);
+    let mut options = SearchOptions::default()
+        .with_case(CaseMode::Sensitive)
+        .with_max_results(usize::MAX);
+    if retain {
+        options = options
+            .with_file_evidence(FileEvidenceMode::All)
+            .with_max_file_evidence(usize::MAX);
+    } else {
+        options = options.with_file_evidence_visitor(move |evidence| {
+            sink.0.fetch_add(1, Ordering::Relaxed);
+            sink.1.fetch_add(evidence.total_lines, Ordering::Relaxed);
+        });
+    }
+    let report = Searcher::new(root, SearchQuery::literal("needle_target"))
+        .scan_options(benchmark_scan_options().with_skip_hidden(true))
+        .options(options)
+        .search()
+        .expect("file evidence benchmark search");
+    if retain {
+        (
+            u64::try_from(report.file_evidence.len()).unwrap_or(u64::MAX),
+            report
+                .file_evidence
+                .iter()
+                .map(|evidence| evidence.total_lines)
+                .sum(),
+        )
+    } else {
+        (
+            counters.0.load(Ordering::Relaxed),
+            counters.1.load(Ordering::Relaxed),
+        )
+    }
 }
 
 fn run_literal(root: &Path) {
@@ -555,11 +629,16 @@ fn report_signatures(report: &weavatrix_search::SearchReport) -> Vec<Signature> 
 }
 
 fn benchmark_scan_options() -> ScanOptions {
+    let discovery = match std::env::var("WEAVATRIX_SEARCH_BENCH_DISCOVERY").as_deref() {
+        Ok("streaming") => ContentDiscoveryMode::Streaming,
+        Ok("buffered") | Err(_) => ContentDiscoveryMode::BufferedParallel,
+        Ok(value) => panic!("unknown benchmark discovery mode {value}"),
+    };
     ScanOptions::default()
         .metadata_only()
         .selected_files_only()
         .with_content_parallelism(benchmark_content_parallelism())
-        .with_content_discovery(ContentDiscoveryMode::BufferedParallel)
+        .with_content_discovery(discovery)
         .with_content_validation(ContentValidationPolicy::Fast)
 }
 

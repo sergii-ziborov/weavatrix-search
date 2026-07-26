@@ -3,7 +3,7 @@ use crate::line_search::SearchIdentity;
 use crate::options::{ResultMode, SearchOptions};
 use crate::query::{CompiledQuery, QueryCache};
 use crate::report::{ContextLine, MatchSpan, SearchMatch};
-use memchr::{memchr, memrchr};
+use memchr::{memchr, memchr_iter, memrchr};
 use std::sync::Arc;
 
 pub(crate) fn search(
@@ -82,13 +82,32 @@ pub(crate) fn search(
         matching_lines = matching_lines.saturating_add(lines);
         occurrences = occurrences.saturating_add(matches);
     }
+    let total_lines = if collector.needs_file_evidence(occurrences) {
+        logical_line_count(bytes)
+    } else {
+        0
+    };
     collector.finish_file(FileSummary {
         root_index: identity.root_index,
         path: identity.path,
+        source_bytes: identity.source_bytes,
+        total_lines,
         matching_lines,
         occurrences,
+        encoding: identity.encoding,
+        lossy: identity.lossy,
         archive: identity.archive,
     });
+}
+
+fn logical_line_count(bytes: &[u8]) -> u64 {
+    if bytes.is_empty() {
+        return 0;
+    }
+    let terminated = bytes.last() == Some(&b'\n');
+    u64::try_from(memchr_iter(b'\n', bytes).count())
+        .unwrap_or(u64::MAX)
+        .saturating_add(u64::from(!terminated))
 }
 
 struct Block {

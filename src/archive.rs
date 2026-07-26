@@ -94,20 +94,28 @@ pub(crate) fn kind(path: &str) -> Option<ArchiveKind> {
 #[allow(clippy::too_many_lines)]
 pub(crate) fn search(
     kind: ArchiveKind,
-    outer_path: &str,
+    source: (usize, &str),
     bytes: &[u8],
     query: &Arc<CompiledQuery>,
     query_cache: &mut QueryCache,
     options: &Arc<SearchOptions>,
     collector: &Arc<Collector>,
 ) -> Result<()> {
+    let (root_index, outer_path) = source;
     #[cfg(feature = "archives")]
     {
         match kind {
-            ArchiveKind::Zip => {
-                search_zip(outer_path, bytes, query, query_cache, options, collector)
-            }
+            ArchiveKind::Zip => search_zip(
+                root_index,
+                outer_path,
+                bytes,
+                query,
+                query_cache,
+                options,
+                collector,
+            ),
             ArchiveKind::Tar => search_tar(
+                root_index,
                 outer_path,
                 Cursor::new(bytes),
                 query,
@@ -117,12 +125,20 @@ pub(crate) fn search(
             ),
             ArchiveKind::TarGzip => {
                 let decoder = flate2::read::GzDecoder::new(Cursor::new(bytes));
-                search_compressed_tar(outer_path, decoder, query, query_cache, options, collector)
+                search_compressed_tar(
+                    root_index,
+                    outer_path,
+                    decoder,
+                    query,
+                    query_cache,
+                    options,
+                    collector,
+                )
             }
             ArchiveKind::Gzip => {
                 let decoder = flate2::read::GzDecoder::new(Cursor::new(bytes));
                 search_compressed_file(
-                    outer_path,
+                    (root_index, outer_path),
                     decoder,
                     &[".gz"],
                     query,
@@ -132,6 +148,7 @@ pub(crate) fn search(
                 )
             }
             ArchiveKind::TarBzip2 => search_compressed_tar(
+                root_index,
                 outer_path,
                 bzip2_rs::DecoderReader::new(Cursor::new(bytes)),
                 query,
@@ -140,7 +157,7 @@ pub(crate) fn search(
                 collector,
             ),
             ArchiveKind::Bzip2 => search_compressed_file(
-                outer_path,
+                (root_index, outer_path),
                 bzip2_rs::DecoderReader::new(Cursor::new(bytes)),
                 &[".bz2", ".bz"],
                 query,
@@ -149,6 +166,7 @@ pub(crate) fn search(
                 collector,
             ),
             ArchiveKind::TarZstd => search_compressed_tar(
+                root_index,
                 outer_path,
                 zstd_decoder(bytes, outer_path)?,
                 query,
@@ -157,7 +175,7 @@ pub(crate) fn search(
                 collector,
             ),
             ArchiveKind::Zstd => search_compressed_file(
-                outer_path,
+                (root_index, outer_path),
                 zstd_decoder(bytes, outer_path)?,
                 &[".zstd", ".zst"],
                 query,
@@ -166,6 +184,7 @@ pub(crate) fn search(
                 collector,
             ),
             ArchiveKind::TarLz4 => search_compressed_tar(
+                root_index,
                 outer_path,
                 lz4_flex::frame::FrameDecoder::new(Cursor::new(bytes)),
                 query,
@@ -174,7 +193,7 @@ pub(crate) fn search(
                 collector,
             ),
             ArchiveKind::Lz4 => search_compressed_file(
-                outer_path,
+                (root_index, outer_path),
                 lz4_flex::frame::FrameDecoder::new(Cursor::new(bytes)),
                 &[".lz4"],
                 query,
@@ -190,6 +209,7 @@ pub(crate) fn search(
                     outer_path,
                 )?;
                 search_tar(
+                    root_index,
                     outer_path,
                     Cursor::new(expanded),
                     query,
@@ -206,7 +226,7 @@ pub(crate) fn search(
                     outer_path,
                 )?;
                 search_expanded_file(
-                    outer_path,
+                    (root_index, outer_path),
                     &expanded,
                     &[".lzma"],
                     query,
@@ -223,6 +243,7 @@ pub(crate) fn search(
                     outer_path,
                 )?;
                 search_tar(
+                    root_index,
                     outer_path,
                     Cursor::new(expanded),
                     query,
@@ -239,7 +260,7 @@ pub(crate) fn search(
                     outer_path,
                 )?;
                 search_expanded_file(
-                    outer_path,
+                    (root_index, outer_path),
                     &expanded,
                     &[".xz"],
                     query,
@@ -249,6 +270,7 @@ pub(crate) fn search(
                 )
             }
             ArchiveKind::TarBrotli => search_compressed_tar(
+                root_index,
                 outer_path,
                 brotli_decompressor::Decompressor::new(Cursor::new(bytes), 8 * 1024),
                 query,
@@ -257,7 +279,7 @@ pub(crate) fn search(
                 collector,
             ),
             ArchiveKind::Brotli => search_compressed_file(
-                outer_path,
+                (root_index, outer_path),
                 brotli_decompressor::Decompressor::new(Cursor::new(bytes), 8 * 1024),
                 &[".br"],
                 query,
@@ -269,7 +291,7 @@ pub(crate) fn search(
     }
     #[cfg(not(feature = "archives"))]
     {
-        let _ = (kind, bytes, query, query_cache, options);
+        let _ = (kind, root_index, bytes, query, query_cache, options);
         collector.warn(SearchWarning {
             path: outer_path.to_owned(),
             kind: SearchWarningKind::Archive,
@@ -281,6 +303,7 @@ pub(crate) fn search(
 
 #[cfg(feature = "archives")]
 fn search_compressed_tar(
+    root_index: usize,
     outer_path: &str,
     decoder: impl Read,
     query: &Arc<CompiledQuery>,
@@ -290,6 +313,7 @@ fn search_compressed_tar(
 ) -> Result<()> {
     let expanded = read_limited(decoder, options.archives.max_expanded_bytes, outer_path)?;
     search_tar(
+        root_index,
         outer_path,
         Cursor::new(expanded),
         query,
@@ -301,7 +325,7 @@ fn search_compressed_tar(
 
 #[cfg(feature = "archives")]
 fn search_compressed_file(
-    outer_path: &str,
+    source: (usize, &str),
     decoder: impl Read,
     suffixes: &[&str],
     query: &Arc<CompiledQuery>,
@@ -309,9 +333,10 @@ fn search_compressed_file(
     options: &Arc<SearchOptions>,
     collector: &Arc<Collector>,
 ) -> Result<()> {
+    let (root_index, outer_path) = source;
     let expanded = read_limited(decoder, options.archives.max_entry_bytes, outer_path)?;
     search_expanded_file(
-        outer_path,
+        (root_index, outer_path),
         &expanded,
         suffixes,
         query,
@@ -323,7 +348,7 @@ fn search_compressed_file(
 
 #[cfg(feature = "archives")]
 fn search_expanded_file(
-    outer_path: &str,
+    source: (usize, &str),
     expanded: &[u8],
     suffixes: &[&str],
     query: &Arc<CompiledQuery>,
@@ -331,11 +356,13 @@ fn search_expanded_file(
     options: &Arc<SearchOptions>,
     collector: &Arc<Collector>,
 ) -> Result<()> {
+    let (root_index, outer_path) = source;
     let inner = strip_suffix_ignore_ascii_case(outer_path, suffixes).unwrap_or("content");
     search_complete_bytes(
         SearchIdentity {
-            root_index: 0,
+            root_index,
             path: format!("{outer_path}!{inner}"),
+            source_bytes: u64::try_from(expanded.len()).unwrap_or(u64::MAX),
             encoding: String::new().into(),
             archive: true,
             source_offset_base: Some(0),
@@ -502,6 +529,7 @@ fn has_suffix(path: &str, suffixes: &[&str]) -> bool {
 
 #[cfg(feature = "archives")]
 fn search_zip(
+    root_index: usize,
     outer_path: &str,
     bytes: &[u8],
     query: &Arc<CompiledQuery>,
@@ -568,8 +596,9 @@ fn search_zip(
         expanded = next_expanded;
         search_complete_bytes(
             SearchIdentity {
-                root_index: 0,
+                root_index,
                 path: format!("{outer_path}!{path}"),
+                source_bytes: u64::try_from(content.len()).unwrap_or(u64::MAX),
                 encoding: String::new().into(),
                 archive: true,
                 source_offset_base: Some(0),
@@ -587,6 +616,7 @@ fn search_zip(
 
 #[cfg(feature = "archives")]
 fn search_tar<R: Read>(
+    root_index: usize,
     outer_path: &str,
     reader: R,
     query: &Arc<CompiledQuery>,
@@ -658,8 +688,9 @@ fn search_tar<R: Read>(
         expanded = next_expanded;
         search_complete_bytes(
             SearchIdentity {
-                root_index: 0,
+                root_index,
                 path: format!("{outer_path}!{path}"),
+                source_bytes: u64::try_from(content.len()).unwrap_or(u64::MAX),
                 encoding: String::new().into(),
                 archive: true,
                 source_offset_base: Some(0),

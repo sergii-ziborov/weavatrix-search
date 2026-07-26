@@ -1,3 +1,5 @@
+use crate::report::FileEvidenceVisitor;
+
 /// Controls case handling for literal and regular-expression queries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CaseMode {
@@ -70,6 +72,18 @@ pub enum ResultMode {
     Quiet,
 }
 
+/// Controls deterministic retention of completed per-source text metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileEvidenceMode {
+    /// Do not retain per-source metrics in the final report.
+    #[default]
+    None,
+    /// Retain metrics only for sources containing at least one match.
+    Matched,
+    /// Retain metrics for every source whose text search completed.
+    All,
+}
+
 /// Resource and expansion limits for archive search.
 #[derive(Debug, Clone)]
 pub struct ArchiveOptions {
@@ -114,6 +128,12 @@ pub struct SearchOptions {
     pub max_results: usize,
     /// Maximum deterministic warnings retained in memory.
     pub max_warnings: usize,
+    /// Controls retained per-source text metrics.
+    pub file_evidence: FileEvidenceMode,
+    /// Maximum deterministic per-source metric records retained in memory.
+    pub max_file_evidence: usize,
+    /// Optional zero-retention callback invoked for every completed source.
+    pub file_evidence_visitor: Option<FileEvidenceVisitor>,
     /// Maximum bytes accepted for one ordinary source file.
     pub max_file_bytes: u64,
     /// Maximum bytes retained for one logical line.
@@ -149,6 +169,9 @@ impl Default for SearchOptions {
             after_context: 0,
             max_results: 10_000,
             max_warnings: 1_000,
+            file_evidence: FileEvidenceMode::None,
+            max_file_evidence: 100_000,
+            file_evidence_visitor: None,
             max_file_bytes: 32 * 1024 * 1024,
             max_line_bytes: 8 * 1024 * 1024,
             max_multiline_bytes: 8 * 1024 * 1024,
@@ -191,6 +214,33 @@ impl SearchOptions {
     #[must_use]
     pub const fn with_max_warnings(mut self, max_warnings: usize) -> Self {
         self.max_warnings = max_warnings;
+        self
+    }
+
+    /// Sets deterministic per-source metric retention.
+    #[must_use]
+    pub const fn with_file_evidence(mut self, file_evidence: FileEvidenceMode) -> Self {
+        self.file_evidence = file_evidence;
+        self
+    }
+
+    /// Sets the deterministic retained per-source metric limit.
+    #[must_use]
+    pub const fn with_max_file_evidence(mut self, max_file_evidence: usize) -> Self {
+        self.max_file_evidence = max_file_evidence;
+        self
+    }
+
+    /// Streams completed per-source metrics without retaining them in memory.
+    ///
+    /// The callback can run concurrently on content workers and must provide
+    /// any synchronization required by its state.
+    #[must_use]
+    pub fn with_file_evidence_visitor<F>(mut self, visitor: F) -> Self
+    where
+        F: Fn(&crate::SourceFileEvidence) + Send + Sync + 'static,
+    {
+        self.file_evidence_visitor = Some(FileEvidenceVisitor::new(visitor));
         self
     }
 
