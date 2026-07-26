@@ -5,11 +5,10 @@ use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
-use weavatrix_scan::{ContentDiscoveryMode, ContentValidationPolicy, ScanOptions};
 use weavatrix_search::{
-    CaseMode, ColorChoice, EncodingMode, IndexOptions, OutputFormat, OutputOptions,
-    PersistentIndex, ResultMode, SearchMode, SearchOptions, SearchQuery, Searcher,
-    write_report_with, write_warnings,
+    CaseMode, ColorChoice, ContentDiscoveryMode, EncodingMode, IndexOptions, OutputFormat,
+    OutputOptions, PersistentIndex, ResultMode, SearchMode, SearchOptions, SearchQuery, Searcher,
+    recommended_scan_options, write_report_with, write_warnings,
 };
 
 const HELP: &str = "\
@@ -52,6 +51,8 @@ OPTIONS:
         --encoding LABEL          auto, utf-8, utf-16le, utf-16be, or label
         --hidden                  Include hidden paths
         --no-archives             Disable archive decoding
+        --discovery MODE          adaptive, streaming, or buffered
+        --content-workers NUM     Bound concurrent source readers
         --max-results NUM         Bound retained match/file records
         --max-file-bytes NUM      Bound one ordinary source
         --max-line-bytes NUM      Bound one logical line
@@ -131,14 +132,23 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<ExitCode, String
     } else {
         options.max_file_bytes
     };
-    let mut scan_options = ScanOptions::default()
-        .metadata_only()
-        .selected_files_only()
+    let mut scan_options = recommended_scan_options(&parsed.roots, &options)
         .with_skip_hidden(!parsed.hidden)
-        .with_content_parallelism(if cfg!(windows) { 8 } else { 16 })
-        .with_content_discovery(ContentDiscoveryMode::BufferedParallel)
-        .with_content_validation(ContentValidationPolicy::Fast)
         .with_override_rules(parsed.globs);
+    if let Some(discovery) = parsed.discovery {
+        scan_options.content_discovery = discovery;
+        if parsed.content_workers.is_none() {
+            scan_options.content_parallelism = Some(match discovery {
+                ContentDiscoveryMode::Streaming if cfg!(windows) => 32,
+                ContentDiscoveryMode::Streaming | ContentDiscoveryMode::BufferedParallel => {
+                    if cfg!(windows) { 8 } else { 16 }
+                }
+            });
+        }
+    }
+    if let Some(content_workers) = parsed.content_workers {
+        scan_options.content_parallelism = Some(content_workers);
+    }
     scan_options.max_file_bytes = scanner_limit;
 
     let started = Instant::now();
@@ -245,6 +255,8 @@ struct Arguments {
     max_multiline_bytes: u64,
     max_replacement_bytes: usize,
     max_decoder_memory_bytes: usize,
+    discovery: Option<ContentDiscoveryMode>,
+    content_workers: Option<usize>,
     index: Option<PathBuf>,
     rebuild_index: bool,
     index_workers: usize,
@@ -304,6 +316,8 @@ impl Arguments {
             max_multiline_bytes: defaults.max_multiline_bytes,
             max_replacement_bytes: defaults.max_replacement_bytes,
             max_decoder_memory_bytes: defaults.archives.max_decoder_memory_bytes,
+            discovery: None,
+            content_workers: None,
             index: None,
             rebuild_index: false,
             index_workers: IndexOptions::default().search_parallelism,
@@ -369,6 +383,12 @@ impl Arguments {
             "--index-status" => self.index_status = Some(next_path(arguments, argument)?),
             "--hidden" => self.hidden = true,
             "--no-archives" => self.archives = false,
+            "--discovery" => {
+                self.discovery = parse_discovery(&next_string(arguments, argument)?)?;
+            }
+            "--content-workers" => {
+                self.content_workers = Some(next_number(arguments, argument)?);
+            }
             "-e" | "--regexp" => self.patterns.push(next_string(arguments, argument)?),
             "-r" | "--replace" => self.replacement = Some(next_string(arguments, argument)?),
             "-g" | "--glob" => self.globs.push(next_string(arguments, argument)?),
@@ -436,6 +456,8 @@ impl Arguments {
             "--max-decoder-memory-bytes" => {
                 self.max_decoder_memory_bytes = parse_number(name, value)?;
             }
+            "--discovery" => self.discovery = parse_discovery(value)?,
+            "--content-workers" => self.content_workers = Some(parse_number(name, value)?),
             "--index" => self.index = Some(PathBuf::from(value)),
             "--index-workers" => self.index_workers = parse_number(name, value)?,
             "--index-status" => self.index_status = Some(PathBuf::from(value)),
@@ -487,6 +509,9 @@ impl Arguments {
         }
         if self.only_matching && (self.before_context > 0 || self.after_context > 0) {
             return Err("--only-matching cannot be combined with context".to_owned());
+        }
+        if self.content_workers == Some(0) {
+            return Err("--content-workers must be greater than zero".to_owned());
         }
         Ok(self)
     }
@@ -580,6 +605,17 @@ fn parse_color(value: &str) -> Result<CliColor, String> {
         "never" => Ok(CliColor::Never),
         _ => Err(format!(
             "invalid color mode {value:?}; expected auto, always, or never"
+        )),
+    }
+}
+
+fn parse_discovery(value: &str) -> Result<Option<ContentDiscoveryMode>, String> {
+    match value {
+        "adaptive" => Ok(None),
+        "streaming" => Ok(Some(ContentDiscoveryMode::Streaming)),
+        "buffered" => Ok(Some(ContentDiscoveryMode::BufferedParallel)),
+        _ => Err(format!(
+            "invalid discovery mode {value:?}; expected adaptive, streaming, or buffered"
         )),
     }
 }

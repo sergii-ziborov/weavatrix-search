@@ -8,7 +8,7 @@ use crate::query::{CompiledQuery, QueryCache, SearchQuery};
 use crate::report::{
     IndexSearchEvidence, SearchBackend, SearchReport, SearchWarning, SearchWarningKind,
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use weavatrix_scan::{
@@ -27,23 +27,53 @@ pub struct Searcher {
     scan_options_custom: bool,
 }
 
+/// Builds the adaptive, ignore-aware scanner profile used by [`Searcher`].
+///
+/// Repository roots keep the low-latency parallel buffered traversal. Broad
+/// Windows roots and filesystem roots use overlapped constant-memory discovery
+/// and a deeper content queue, avoiding retention of millions of paths before
+/// matching starts. Other Unix directories retain the faster buffered
+/// traversal unless the caller explicitly requests streaming.
+#[must_use]
+pub fn recommended_scan_options(roots: &[PathBuf], options: &SearchOptions) -> ScanOptions {
+    let repository_roots = !roots.is_empty() && roots.iter().all(|root| has_git_marker(root));
+    let includes_filesystem_root = roots.iter().any(|root| root.parent().is_none());
+    let discovery = if !repository_roots && (cfg!(windows) || includes_filesystem_root) {
+        ContentDiscoveryMode::Streaming
+    } else {
+        ContentDiscoveryMode::BufferedParallel
+    };
+    let content_parallelism = if discovery == ContentDiscoveryMode::Streaming {
+        if cfg!(windows) { 32 } else { 16 }
+    } else if cfg!(windows) {
+        8
+    } else {
+        16
+    };
+    let mut scan_options = ScanOptions::default()
+        .metadata_only()
+        .selected_files_only()
+        .with_skip_hidden(true)
+        .with_content_parallelism(content_parallelism)
+        .with_content_discovery(discovery)
+        .with_content_validation(ContentValidationPolicy::Fast);
+    scan_options.max_file_bytes = scanner_file_limit(options);
+    scan_options
+}
+
+fn has_git_marker(root: &Path) -> bool {
+    root.join(".git").try_exists().unwrap_or(false)
+}
+
 impl Searcher {
     /// Creates a searcher with bounded, ignore-aware defaults.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>, query: SearchQuery) -> Self {
+        let root = root.into();
         let options = SearchOptions::default();
-        let mut scan_options = ScanOptions::default()
-            .metadata_only()
-            .selected_files_only()
-            .with_skip_hidden(true)
-            .with_content_parallelism(if cfg!(windows) { 8 } else { 16 })
-            .with_content_discovery(ContentDiscoveryMode::BufferedParallel)
-            .with_content_validation(ContentValidationPolicy::Fast);
-        // Archive inputs must reach the bounded archive reader. Scanner's
-        // repository-oriented default is intentionally smaller.
-        scan_options.max_file_bytes = scanner_file_limit(&options);
+        let scan_options = recommended_scan_options(std::slice::from_ref(&root), &options);
         Self {
-            root: root.into(),
+            root,
             additional_roots: Vec::new(),
             query,
             options,
@@ -70,15 +100,20 @@ impl Searcher {
     #[must_use]
     pub fn add_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.additional_roots.push(root.into());
+        if !self.scan_options_custom {
+            let roots = std::iter::once(&self.root)
+                .chain(self.additional_roots.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            self.scan_options = recommended_scan_options(&roots, &self.options);
+        }
         self
     }
 
     /// Adds independent roots in insertion order.
     #[must_use]
-    pub fn extend_roots(mut self, roots: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
-        self.additional_roots
-            .extend(roots.into_iter().map(Into::into));
-        self
+    pub fn extend_roots(self, roots: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
+        roots.into_iter().fold(self, Self::add_root)
     }
 
     /// Replaces repository discovery and content-delivery policy.

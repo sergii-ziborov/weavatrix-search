@@ -158,6 +158,39 @@ fn cli_has_stable_output_and_exit_codes() {
 }
 
 #[test]
+fn cli_exposes_discovery_and_reader_controls() {
+    let fixture = Fixture::new();
+    let binary = env!("CARGO_BIN_EXE_weavatrix-search");
+
+    for discovery in ["adaptive", "streaming", "buffered"] {
+        let output = Command::new(binary)
+            .args([
+                "--fixed-strings",
+                "--discovery",
+                discovery,
+                "--content-workers",
+                "2",
+                "Ada",
+                path_text(&fixture.root),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(Some(0), output.status.code(), "{discovery}");
+    }
+
+    let invalid = Command::new(binary)
+        .args(["--content-workers", "0", "Ada", path_text(&fixture.root)])
+        .output()
+        .unwrap();
+    assert_eq!(Some(2), invalid.status.code());
+    assert!(
+        String::from_utf8(invalid.stderr)
+            .unwrap()
+            .contains("must be greater than zero")
+    );
+}
+
+#[test]
 fn multi_root_cli_and_library_preserve_root_identity() {
     let first = Fixture::new();
     let second = Fixture::new();

@@ -35,9 +35,10 @@ pub use report::{
     ContextLine, FileEvidenceVisitor, IndexSearchEvidence, MatchSpan, MatchedFile, SearchBackend,
     SearchMatch, SearchReport, SearchWarning, SearchWarningKind, SourceFileEvidence,
 };
-pub use searcher::Searcher;
+pub use searcher::{Searcher, recommended_scan_options};
 pub use weavatrix_scan::{
-    CancellationToken, ScanOptions, WatchEvent, WatchEventKind, WatchPlan, WatcherEventAdapter,
+    CancellationToken, ContentDiscoveryMode, ContentValidationPolicy, ScanOptions, WatchEvent,
+    WatchEventKind, WatchPlan, WatcherEventAdapter,
 };
 
 /// Searches one repository with default scanner and search policies.

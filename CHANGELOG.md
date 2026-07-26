@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 0.3.0 - 2026-07-26
+
+- Add `SourceFileEvidence` with root/path identity, source bytes, logical lines,
+  matching lines, occurrences, encoding, lossy-decode, and archive evidence.
+- Add deterministic `Matched`/`All` evidence retention plus a concurrent,
+  zero-retention visitor for Graph and hosted indexing consumers.
+- Compute ordinary-file line and byte metrics in the existing content pass
+  without a second filesystem read or whole-file allocation.
+- Preserve source evidence across multi-root, UTF-16, multiline, archive, and
+  persistent-index search paths.
+- Select constant-memory overlapped discovery for broad Windows/filesystem
+  roots while retaining low-latency buffered discovery for repositories and
+  ordinary Unix directories.
+- Add CLI `--discovery` and `--content-workers` controls for reproducible
+  traversal tuning.
+- Extend exact-parity benchmarks with streaming and retained evidence profiles.
+
 ## 0.2.0 - 2026-07-26
 
 - Add checksummed, revisioned persistent multi-root content indexes with atomic

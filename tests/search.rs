@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use weavatrix_search::{
-    CaseMode, EncodingMode, Error, FileEvidenceMode, ResultMode, SearchMode, SearchOptions,
-    SearchQuery, SearchWarningKind, Searcher,
+    CaseMode, ContentDiscoveryMode, EncodingMode, Error, FileEvidenceMode, ResultMode, SearchMode,
+    SearchOptions, SearchQuery, SearchWarningKind, Searcher, recommended_scan_options,
 };
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -68,6 +68,34 @@ fn literal_search_streams_long_lines_and_keeps_context() {
     assert_eq!(report.matches[0].spans[0].start, 65_534);
     assert_eq!(report.matches[0].decoded_byte_offset, 7);
     assert_eq!(report.matches[0].source_byte_offset, Some(7));
+}
+
+#[test]
+fn adaptive_scan_profile_streams_broad_roots_and_buffers_repositories() {
+    let broad = TempRepo::new("adaptive-broad");
+    let repository = TempRepo::new("adaptive-repository");
+    fs::create_dir(repository.path().join(".git")).unwrap();
+    let options = SearchOptions::default();
+
+    let broad_profile = recommended_scan_options(&[broad.path().to_path_buf()], &options);
+    let repository_profile = recommended_scan_options(&[repository.path().to_path_buf()], &options);
+
+    assert_eq!(
+        broad_profile.content_discovery,
+        if cfg!(windows) {
+            ContentDiscoveryMode::Streaming
+        } else {
+            ContentDiscoveryMode::BufferedParallel
+        }
+    );
+    assert_eq!(
+        repository_profile.content_discovery,
+        ContentDiscoveryMode::BufferedParallel
+    );
+    if cfg!(windows) {
+        assert_eq!(broad_profile.content_parallelism, Some(32));
+        assert_eq!(repository_profile.content_parallelism, Some(8));
+    }
 }
 
 #[test]

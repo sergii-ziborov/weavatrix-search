@@ -629,11 +629,16 @@ fn report_signatures(report: &weavatrix_search::SearchReport) -> Vec<Signature> 
 }
 
 fn benchmark_scan_options() -> ScanOptions {
+    let discovery = match std::env::var("WEAVATRIX_SEARCH_BENCH_DISCOVERY").as_deref() {
+        Ok("streaming") => ContentDiscoveryMode::Streaming,
+        Ok("buffered") | Err(_) => ContentDiscoveryMode::BufferedParallel,
+        Ok(value) => panic!("unknown benchmark discovery mode {value}"),
+    };
     ScanOptions::default()
         .metadata_only()
         .selected_files_only()
         .with_content_parallelism(benchmark_content_parallelism())
-        .with_content_discovery(ContentDiscoveryMode::BufferedParallel)
+        .with_content_discovery(discovery)
         .with_content_validation(ContentValidationPolicy::Fast)
 }
 
