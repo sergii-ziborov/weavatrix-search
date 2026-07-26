@@ -147,7 +147,8 @@ pub(crate) struct Collector {
     warning_limit: usize,
     file_evidence_mode: FileEvidenceMode,
     file_evidence_limit: usize,
-    file_evidence_visitor: Option<crate::FileEvidenceVisitor>,
+    file_evidence_visitor: Mutex<Option<crate::FileEvidenceVisitor>>,
+    file_evidence_visitor_enabled: AtomicBool,
     result_mode: ResultMode,
     matches: Mutex<BinaryHeap<RankedMatch>>,
     files: Mutex<BinaryHeap<RankedFile>>,
@@ -171,7 +172,8 @@ impl Collector {
             warning_limit: options.max_warnings,
             file_evidence_mode: options.file_evidence,
             file_evidence_limit: options.max_file_evidence,
-            file_evidence_visitor: options.file_evidence_visitor.clone(),
+            file_evidence_visitor: Mutex::new(options.file_evidence_visitor.clone()),
+            file_evidence_visitor_enabled: AtomicBool::new(options.file_evidence_visitor.is_some()),
             result_mode: options.result_mode,
             matches: Mutex::new(BinaryHeap::new()),
             files: Mutex::new(BinaryHeap::new()),
@@ -219,7 +221,10 @@ impl Collector {
             FileEvidenceMode::Matched => summary.occurrences > 0,
             FileEvidenceMode::All => true,
         };
-        if retain_evidence || self.file_evidence_visitor.is_some() {
+        let visit_evidence = self
+            .file_evidence_visitor_enabled
+            .load(AtomicOrdering::Relaxed);
+        if retain_evidence || visit_evidence {
             let evidence = SourceFileEvidence {
                 root_index: summary.root_index,
                 path: summary.path.clone(),
@@ -231,8 +236,15 @@ impl Collector {
                 lossy: summary.lossy,
                 archive: summary.archive,
             };
-            if let Some(visitor) = &self.file_evidence_visitor {
-                visitor.visit(&evidence);
+            if visit_evidence {
+                let visitor = self
+                    .file_evidence_visitor
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
+                if let Some(visitor) = visitor {
+                    visitor.visit(&evidence);
+                }
             }
             if retain_evidence {
                 self.retain_file_evidence(evidence);
@@ -281,9 +293,19 @@ impl Collector {
     }
 
     pub(crate) fn needs_file_evidence(&self, occurrences: u64) -> bool {
-        self.file_evidence_visitor.is_some()
+        self.file_evidence_visitor_enabled
+            .load(AtomicOrdering::Relaxed)
             || self.file_evidence_mode == FileEvidenceMode::All
             || (self.file_evidence_mode == FileEvidenceMode::Matched && occurrences > 0)
+    }
+
+    pub(crate) fn clear_file_evidence_visitor(&self) {
+        self.file_evidence_visitor_enabled
+            .store(false, AtomicOrdering::Relaxed);
+        self.file_evidence_visitor
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
     }
 
     fn retain_file_evidence(&self, evidence: SourceFileEvidence) {
