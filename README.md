@@ -293,12 +293,26 @@ the same row:
 
 | GitHub runner | Weavatrix Search literal | ripgrep literal | Outcome |
 | --- | ---: | ---: | --- |
-| Windows | **96.0 ms** | 165.0 ms | Weavatrix 1.72x faster |
-| macOS ARM64 | **27.5 ms** | 49.2 ms | Weavatrix 1.79x faster |
-| Ubuntu | 26.8 ms | **20.1 ms** | ripgrep 1.34x faster |
+| Windows | **71.4 ms** | 133.6 ms | Weavatrix 1.87x faster |
+| macOS ARM64 | **57.4 ms** | 80.9 ms | Weavatrix 1.41x faster |
+| Ubuntu | 26.4 ms | **19.8 ms** | ripgrep 1.33x faster |
 
 All three native jobs also pass exact-result parity for literal, regex,
 query-set, multiline, count, and files-with-matches modes.
+
+The same `0.2.0` jobs build a separate 6,000-file corpus (5,502 indexed
+including control files), re-check exact resident/ripgrep output parity, and
+report:
+
+| GitHub runner | Index build | Validated open | Resident query | One-file update | ripgrep process |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Windows | 102.1 ms | 7.4 ms | **0.846 ms** | **0.751 ms** | 106.4 ms |
+| macOS ARM64 | 100.2 ms | 12.8 ms | **0.824 ms** | **2.786 ms** | 67.3 ms |
+| Ubuntu | 38.3 ms | 4.8 ms | **0.448 ms** | **0.416 ms** | 20.2 ms |
+
+These hosted-runner resident figures use five measured runs after one warmup.
+They demonstrate the traversal/startup avoided by the index, not a universal
+per-byte literal-engine speedup.
 
 To reproduce the end-to-end rows:
 
