@@ -295,22 +295,33 @@ the same row:
 
 | GitHub runner | Weavatrix Search literal | ripgrep literal | Outcome |
 | --- | ---: | ---: | --- |
-| Windows | **71.4 ms** | 133.6 ms | Weavatrix 1.87x faster |
-| macOS ARM64 | **57.4 ms** | 80.9 ms | Weavatrix 1.41x faster |
-| Ubuntu | 26.4 ms | **19.8 ms** | ripgrep 1.33x faster |
+| Windows | **83.3 ms** | 176.5 ms | Weavatrix 2.12x faster |
+| macOS ARM64 | **49.0 ms** | 82.2 ms | Weavatrix 1.68x faster |
+| Ubuntu | **15.8 ms** | 16.2 ms | Weavatrix 1.03x faster |
 
 All three native jobs also pass exact-result parity for literal, regex,
 query-set, multiline, count, and files-with-matches modes.
 
-The same `0.2.0` jobs build a separate 6,000-file corpus (5,502 indexed
+The Ubuntu job also runs the exact literal profile at 200k scale:
+
+| GitHub runner | Selected / matching | Weavatrix Search | ripgrep | Outcome |
+| --- | ---: | ---: | ---: | --- |
+| Ubuntu, 200,000 files | 199,500 / 9,975 | 606.2 ms | **448.5 ms** | Both below 1 s; ripgrep 1.35x faster |
+
+This scale row is the median of three interleaved runs after one warmup. It
+shows that buffered-parallel discovery closes the small-repository Linux gap
+and reaches the subsecond 200k target, but does not claim an ordinary
+filesystem win over ripgrep at that scale.
+
+The same `0.2.1` jobs build a separate 6,000-file corpus (5,502 indexed
 including control files), re-check exact resident/ripgrep output parity, and
 report:
 
 | GitHub runner | Index build | Validated open | Resident query | One-file update | ripgrep process |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Windows | 102.1 ms | 7.4 ms | **0.846 ms** | **0.751 ms** | 106.4 ms |
-| macOS ARM64 | 100.2 ms | 12.8 ms | **0.824 ms** | **2.786 ms** | 67.3 ms |
-| Ubuntu | 38.3 ms | 4.8 ms | **0.448 ms** | **0.416 ms** | 20.2 ms |
+| Windows | 253.2 ms | 7.8 ms | **0.888 ms** | **0.810 ms** | 133.4 ms |
+| macOS ARM64 | 59.7 ms | 11.8 ms | **0.389 ms** | **1.316 ms** | 51.1 ms |
+| Ubuntu | 34.8 ms | 3.8 ms | **0.336 ms** | **0.359 ms** | 16.5 ms |
 
 These hosted-runner resident figures use five measured runs after one warmup.
 They demonstrate the traversal/startup avoided by the index, not a universal
