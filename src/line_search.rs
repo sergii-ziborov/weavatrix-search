@@ -3,6 +3,7 @@ use crate::options::{ResultMode, SearchOptions};
 use crate::query::{CompiledQuery, QueryCache};
 use crate::report::{ContextLine, SearchMatch, SearchWarning, SearchWarningKind};
 use memchr::memchr;
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -10,7 +11,7 @@ use std::sync::Arc;
 pub(crate) struct SearchIdentity {
     pub(crate) root_index: usize,
     pub(crate) path: String,
-    pub(crate) encoding: String,
+    pub(crate) encoding: Cow<'static, str>,
     pub(crate) archive: bool,
     pub(crate) source_offset_base: Option<u64>,
     pub(crate) lossy: bool,
@@ -40,6 +41,10 @@ pub(crate) struct LineSearcher {
 }
 
 impl LineSearcher {
+    pub(crate) fn path(&self) -> &str {
+        &self.identity.path
+    }
+
     pub(crate) fn new(
         query: Arc<CompiledQuery>,
         options: Arc<SearchOptions>,
@@ -241,7 +246,7 @@ impl LineSearcher {
                 spans,
                 before: self.before.iter().cloned().collect(),
                 after: Vec::with_capacity(self.options.after_context),
-                encoding: self.identity.encoding.clone(),
+                encoding: self.identity.encoding.to_string(),
                 lossy,
                 archive: self.identity.archive,
             };

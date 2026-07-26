@@ -49,9 +49,10 @@ impl SearchQuery {
             return Err(Error::EmptyQuery);
         }
         if let [PreparedPattern::SensitiveLiteral(pattern)] = patterns.as_slice() {
-            return Ok(CompiledQuery::Literal(
-                pattern.as_bytes().to_vec().into_boxed_slice(),
-            ));
+            return Ok(CompiledQuery::Literal {
+                finder: Box::new(memmem::Finder::new(pattern.as_bytes()).into_owned()),
+                length: pattern.len(),
+            });
         }
         CompiledQuery::regex_many(
             &patterns
@@ -183,7 +184,10 @@ fn trigrams(bytes: &[u8]) -> Option<Vec<u32>> {
 }
 
 pub(crate) enum CompiledQuery {
-    Literal(Box<[u8]>),
+    Literal {
+        finder: Box<memmem::Finder<'static>>,
+        length: usize,
+    },
     Regex(Regex),
 }
 
@@ -202,7 +206,7 @@ impl CompiledQuery {
 
     pub(crate) fn create_cache(&self) -> QueryCache {
         match self {
-            Self::Literal(_) => QueryCache::Literal,
+            Self::Literal { .. } => QueryCache::Literal,
             Self::Regex(regex) => QueryCache::Regex(Box::new(regex.create_cache())),
         }
     }
@@ -223,12 +227,12 @@ impl CompiledQuery {
         mut visitor: impl FnMut(MatchSpan) -> bool,
     ) {
         match (self, cache) {
-            (Self::Literal(needle), QueryCache::Literal) => {
-                for start in memmem::find_iter(haystack, needle) {
+            (Self::Literal { finder, length }, QueryCache::Literal) => {
+                for start in finder.find_iter(haystack) {
                     if !visitor(MatchSpan {
                         pattern_index: 0,
                         start,
-                        end: start + needle.len(),
+                        end: start + *length,
                     }) {
                         break;
                     }
@@ -248,7 +252,8 @@ impl CompiledQuery {
                     }
                 }
             }
-            (Self::Literal(_), QueryCache::Regex(_)) | (Self::Regex(_), QueryCache::Literal) => {
+            (Self::Literal { .. }, QueryCache::Regex(_))
+            | (Self::Regex(_), QueryCache::Literal) => {
                 unreachable!("query cache belongs to another compiled query")
             }
         }
@@ -266,10 +271,10 @@ impl CompiledQuery {
         let mut copied = range.start;
         let mut exceeded = false;
         match (self, cache) {
-            (Self::Literal(needle), QueryCache::Literal) => {
-                for start in memmem::find_iter(&haystack[range.clone()], needle) {
+            (Self::Literal { finder, length }, QueryCache::Literal) => {
+                for start in finder.find_iter(&haystack[range.clone()]) {
                     let start = range.start + start;
-                    let end = start + needle.len();
+                    let end = start + *length;
                     append_bounded(&mut output, &haystack[copied..start], limit, &mut exceeded);
                     append_replacement(
                         &mut output,
@@ -315,7 +320,8 @@ impl CompiledQuery {
                     }
                 }
             }
-            (Self::Literal(_), QueryCache::Regex(_)) | (Self::Regex(_), QueryCache::Literal) => {
+            (Self::Literal { .. }, QueryCache::Regex(_))
+            | (Self::Regex(_), QueryCache::Literal) => {
                 unreachable!("query cache belongs to another compiled query")
             }
         }

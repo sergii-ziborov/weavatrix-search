@@ -336,7 +336,7 @@ fn search_expanded_file(
         SearchIdentity {
             root_index: 0,
             path: format!("{outer_path}!{inner}"),
-            encoding: String::new(),
+            encoding: String::new().into(),
             archive: true,
             source_offset_base: Some(0),
             lossy: false,
@@ -570,7 +570,7 @@ fn search_zip(
             SearchIdentity {
                 root_index: 0,
                 path: format!("{outer_path}!{path}"),
-                encoding: String::new(),
+                encoding: String::new().into(),
                 archive: true,
                 source_offset_base: Some(0),
                 lossy: false,
@@ -660,7 +660,7 @@ fn search_tar<R: Read>(
             SearchIdentity {
                 root_index: 0,
                 path: format!("{outer_path}!{path}"),
-                encoding: String::new(),
+                encoding: String::new().into(),
                 archive: true,
                 source_offset_base: Some(0),
                 lossy: false,

@@ -15,8 +15,12 @@ verified by the normal search engine.
 
 ## Status
 
-The `0.2.0` release contract covers:
+The `0.2.1` release contract covers:
 
+- low-latency buffered-parallel discovery with the same Scan selection and
+  opened-handle validation contract as constant-memory streaming;
+- one compiled literal finder per query and allocation-free common UTF-8
+  encoding evidence until a match is retained;
 - ordered literal/regex query sets in one content pass;
 - line-streaming and explicitly bounded multiline matching;
 - stable line, decoded/source byte-offset, and submatch evidence;
@@ -157,7 +161,7 @@ can own process lifetime, cancellation, and health reporting.
 
 ```text
 weavatrix-scan
-  -> ignore-aware bounded discovery
+  -> ignore-aware buffered-parallel discovery
   -> safe parallel file open
   -> borrowed byte chunks
   -> per-worker single/query-set automata state
@@ -259,28 +263,26 @@ reboot and is deliberately not inferred from warm runs.
 
 ### Persistent/live index benchmark
 
-The `0.2.0` index closes the repeated-query gap without weakening Scan's
+The `0.2.1` index closes the repeated-query gap without weakening Scan's
 filesystem evidence. The benchmark first builds and atomically saves an exact
 snapshot, opens it with full format/checksum/revision validation, asserts exact
 normalized path/line/span parity against ripgrep, then times resident queries.
 The literal has 975 matches at 20k and 9,975 at 200k; in this synthetic corpus
 the Bloom filter admitted exactly those matching files.
 
-The 20k row uses seven measured interleaved runs after two warmups. The 200k
-resident query and changed-file update use seven runs after two warmups on the
-same disclosed Windows host. A first complete 200k ripgrep pass established
-exact parity, but repeated ripgrep timing was discarded because Defender was
-still processing the newly generated corpus; no contaminated competitor number
-is reported.
+The 20k row is the published `0.2.0` reference and uses seven measured
+interleaved runs after two warmups. The refreshed 200k `0.2.1` row uses five
+resident queries and updates after one warmup on the same disclosed Windows
+host. It includes a fresh ripgrep parity/timing pass on the same corpus.
 
 | Corpus | Serialized index | Build | Validated open | Resident query | One-file live update | ripgrep process |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 20,000 files (19,502 indexed) | 3.21 MB | 578.5 ms | 55.6 ms | **15.7 ms** | **9.3 ms** | 785.1 ms |
-| 200,000 files (199,502 indexed) | 33.07 MB | not reported | **421.6 ms** | **110.4 ms** | **22.7 ms** | parity pass only |
+| 200,000 files (199,502 indexed) | 33.07 MB | 2,992.3 ms | **418.5 ms** | **23.5 ms** | **31.2 ms** | 5,082.8 ms |
 
-Thus even a fresh validated open plus query remained about 532 ms at 200k;
-an already resident query was about 110 ms. This is a scenario distinction,
-not a claim that the literal engine is universally 50x faster: the 20k
+Thus even a fresh validated open plus query remained about 442 ms at 200k;
+an already resident query was about 23.5 ms. This is a scenario distinction,
+not a claim that the literal engine is universally 200x faster: the 20k
 resident result avoids process startup and repository traversal by design,
 while the ripgrep CLI repeats both. Index RAM intentionally retains exact
 source bytes plus paths, hashes, and Bloom metadata; use filesystem streaming
@@ -320,6 +322,8 @@ To reproduce the end-to-end rows:
 cargo build --release --all-features
 cargo bench --bench compare_ripgrep -- prepare <fixture-path> 20000
 cargo bench --bench compare_ripgrep -- verify <fixture-path> 20000
+WEAVATRIX_SEARCH_BENCH_WARMUPS=2 WEAVATRIX_SEARCH_BENCH_RUNS=7 \
+  cargo bench --bench compare_ripgrep -- run-literal <fixture-path>
 WEAVATRIX_SEARCH_BENCH_WARMUPS=2 WEAVATRIX_SEARCH_BENCH_RUNS=7 \
   cargo bench --bench compare_ripgrep -- run-cli <fixture-path>
 WEAVATRIX_SEARCH_BENCH_WARMUPS=2 WEAVATRIX_SEARCH_BENCH_RUNS=7 \

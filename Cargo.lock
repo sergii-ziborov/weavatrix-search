@@ -538,9 +538,9 @@ checksum = "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
 
 [[package]]
 name = "weavatrix-scan"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "351a1a530ec38d8f9e96e02d2d3c49be09aaecb13f4283c59e46e2672fe1ef34"
+checksum = "3cd6d6df5f6bb9e67d121d710c5cab9a6aed3e5f4a13f35783f99c362cdff88f"
 dependencies = [
  "notify",
  "winapi-util",
@@ -548,7 +548,7 @@ dependencies = [
 
 [[package]]
 name = "weavatrix-search"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "banzai",
  "brotli",

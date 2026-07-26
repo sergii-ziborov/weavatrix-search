@@ -12,9 +12,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use weavatrix_scan::{
-    ContentValidationPolicy, ContentVisitControl, ContentVisitEvent, ContentVisitMode,
-    ContentVisitReport, MultiContentVisitReport, MultiScanner, ScanCacheStats, ScanOptions,
-    ScanTermination,
+    ContentDiscoveryMode, ContentValidationPolicy, ContentVisitControl, ContentVisitEvent,
+    ContentVisitMode, ContentVisitReport, MultiContentVisitReport, MultiScanner, ScanCacheStats,
+    ScanOptions, ScanTermination,
 };
 
 /// Configures and executes a search across one or more repository roots.
@@ -37,6 +37,7 @@ impl Searcher {
             .selected_files_only()
             .with_skip_hidden(true)
             .with_content_parallelism(if cfg!(windows) { 8 } else { 16 })
+            .with_content_discovery(ContentDiscoveryMode::BufferedParallel)
             .with_content_validation(ContentValidationPolicy::Fast);
         // Archive inputs must reach the bounded archive reader. Scanner's
         // repository-oriented default is intentionally smaller.
@@ -134,7 +135,7 @@ impl Searcher {
                             SearchIdentity {
                                 root_index: opened.root_index,
                                 path: opened.relative.to_owned(),
-                                encoding: "UTF-8".to_owned(),
+                                encoding: "UTF-8".into(),
                                 archive: false,
                                 source_offset_base: Some(0),
                                 lossy: false,
@@ -265,7 +266,7 @@ pub(crate) fn search_indexed(
                         SearchIdentity {
                             root_index: file.root_index,
                             path: file.path.to_owned(),
-                            encoding: "UTF-8".to_owned(),
+                            encoding: "UTF-8".into(),
                             archive: false,
                             source_offset_base: Some(0),
                             lossy: false,
@@ -382,7 +383,7 @@ enum FileMode {
 }
 
 struct FileProcessor {
-    identity: SearchIdentity,
+    identity: Option<SearchIdentity>,
     expected_bytes: u64,
     archive: Option<ArchiveKind>,
     query: Arc<CompiledQuery>,
@@ -400,15 +401,16 @@ impl FileProcessor {
         options: Arc<SearchOptions>,
         collector: Arc<Collector>,
     ) -> Self {
+        let mut identity = Some(identity);
         let archive = options
             .archives
             .enabled
-            .then(|| archive::kind(&identity.path))
+            .then(|| archive::kind(&identity.as_ref().expect("identity exists").path))
             .flatten();
         let mode = if archive.is_some() {
             if expected_bytes > options.archives.max_archive_bytes {
                 collector.warn(SearchWarning {
-                    path: identity.path.clone(),
+                    path: identity.as_ref().expect("identity exists").path.clone(),
                     kind: SearchWarningKind::Limit,
                     message: format!(
                         "archive is {expected_bytes} bytes; limit is {}",
@@ -424,7 +426,7 @@ impl FileProcessor {
         } else if options.mode == SearchMode::Multiline {
             if expected_bytes > options.max_multiline_bytes {
                 collector.warn(SearchWarning {
-                    path: identity.path.clone(),
+                    path: identity.as_ref().expect("identity exists").path.clone(),
                     kind: SearchWarningKind::Limit,
                     message: format!(
                         "multiline source is {expected_bytes} bytes; limit is {}",
@@ -440,13 +442,13 @@ impl FileProcessor {
         } else {
             match is_streaming_utf8(&options.encoding) {
                 Ok(true) if options.encoding == EncodingMode::Auto => {
-                    FileMode::Undecided(Vec::with_capacity(3))
+                    FileMode::Undecided(Vec::new())
                 }
                 Ok(true) => FileMode::Streaming(LineSearcher::new(
                     Arc::clone(&query),
                     Arc::clone(&options),
                     Arc::clone(&collector),
-                    identity.clone(),
+                    identity.take().expect("identity exists"),
                 )),
                 Ok(false) => FileMode::Buffered(Vec::with_capacity(
                     usize::try_from(expected_bytes).unwrap_or(0),
@@ -487,7 +489,13 @@ impl FileProcessor {
                 }
             }
             FileMode::Streaming(mut lines) => {
-                if self.binary_skip(bytes) {
+                if binary_skip(
+                    &self.options,
+                    &self.collector,
+                    &mut self.inspected_binary_bytes,
+                    lines.path(),
+                    bytes,
+                ) {
                     FileMode::Skipped
                 } else {
                     lines.push(bytes, query_cache);
@@ -507,9 +515,15 @@ impl FileProcessor {
                 {
                     let message = format!("buffered input exceeds the {limit} byte limit");
                     return Err(if self.archive.is_some() {
-                        Error::archive(&self.identity.path, message)
+                        Error::archive(
+                            &self.identity.as_ref().expect("identity exists").path,
+                            message,
+                        )
                     } else {
-                        Error::limit(&self.identity.path, message)
+                        Error::limit(
+                            &self.identity.as_ref().expect("identity exists").path,
+                            message,
+                        )
                     });
                 }
                 buffer.extend_from_slice(bytes);
@@ -525,7 +539,16 @@ impl FileProcessor {
             FileMode::Buffered(bytes.to_vec())
         } else {
             let skip = utf8_bom_len(bytes);
-            let mut identity = self.identity.clone();
+            if binary_skip(
+                &self.options,
+                &self.collector,
+                &mut self.inspected_binary_bytes,
+                &self.identity.as_ref().expect("identity exists").path,
+                &bytes[skip..],
+            ) {
+                return FileMode::Skipped;
+            }
+            let mut identity = self.identity.take().expect("identity exists");
             identity.source_offset_base =
                 Some(u64::try_from(skip).expect("UTF-8 BOM length fits in u64"));
             let mut lines = LineSearcher::new(
@@ -534,19 +557,15 @@ impl FileProcessor {
                 Arc::clone(&self.collector),
                 identity,
             );
-            if self.binary_skip(&bytes[skip..]) {
-                FileMode::Skipped
-            } else {
-                lines.push(&bytes[skip..], query_cache);
-                FileMode::Streaming(lines)
-            }
+            lines.push(&bytes[skip..], query_cache);
+            FileMode::Streaming(lines)
         }
     }
 
     fn finish(self, query_cache: &mut QueryCache) -> Result<()> {
         match self.mode {
             FileMode::Undecided(bytes) => search_complete_bytes(
-                self.identity,
+                self.identity.expect("identity exists"),
                 &bytes,
                 self.query,
                 query_cache,
@@ -561,7 +580,7 @@ impl FileProcessor {
                 if let Some(kind) = self.archive {
                     archive::search(
                         kind,
-                        &self.identity.path,
+                        &self.identity.as_ref().expect("identity exists").path,
                         &bytes,
                         &self.query,
                         query_cache,
@@ -570,7 +589,7 @@ impl FileProcessor {
                     )
                 } else {
                     search_complete_bytes(
-                        self.identity,
+                        self.identity.expect("identity exists"),
                         &bytes,
                         self.query,
                         query_cache,
@@ -582,24 +601,30 @@ impl FileProcessor {
             FileMode::Skipped => Ok(()),
         }
     }
+}
 
-    fn binary_skip(&mut self, bytes: &[u8]) -> bool {
-        if self.options.binary == BinaryPolicy::Search || self.inspected_binary_bytes >= 8 * 1024 {
-            return false;
-        }
-        let remaining = 8 * 1024 - self.inspected_binary_bytes;
-        let inspected = &bytes[..bytes.len().min(remaining)];
-        self.inspected_binary_bytes += inspected.len();
-        if memchr::memchr(0, inspected).is_some() {
-            self.collector.warn(SearchWarning {
-                path: self.identity.path.clone(),
-                kind: SearchWarningKind::Binary,
-                message: "binary file skipped after NUL-byte detection".to_owned(),
-            });
-            true
-        } else {
-            false
-        }
+fn binary_skip(
+    options: &SearchOptions,
+    collector: &Collector,
+    inspected_binary_bytes: &mut usize,
+    path: &str,
+    bytes: &[u8],
+) -> bool {
+    if options.binary == BinaryPolicy::Search || *inspected_binary_bytes >= 8 * 1024 {
+        return false;
+    }
+    let remaining = 8 * 1024 - *inspected_binary_bytes;
+    let inspected = &bytes[..bytes.len().min(remaining)];
+    *inspected_binary_bytes += inspected.len();
+    if memchr::memchr(0, inspected).is_some() {
+        collector.warn(SearchWarning {
+            path: path.to_owned(),
+            kind: SearchWarningKind::Binary,
+            message: "binary file skipped after NUL-byte detection".to_owned(),
+        });
+        true
+    } else {
+        false
     }
 }
 

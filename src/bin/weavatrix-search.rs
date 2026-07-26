@@ -5,7 +5,7 @@ use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Instant;
-use weavatrix_scan::{ContentValidationPolicy, ScanOptions};
+use weavatrix_scan::{ContentDiscoveryMode, ContentValidationPolicy, ScanOptions};
 use weavatrix_search::{
     CaseMode, ColorChoice, EncodingMode, IndexOptions, OutputFormat, OutputOptions,
     PersistentIndex, ResultMode, SearchMode, SearchOptions, SearchQuery, Searcher,
@@ -136,6 +136,7 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<ExitCode, String
         .selected_files_only()
         .with_skip_hidden(!parsed.hidden)
         .with_content_parallelism(if cfg!(windows) { 8 } else { 16 })
+        .with_content_discovery(ContentDiscoveryMode::BufferedParallel)
         .with_content_validation(ContentValidationPolicy::Fast)
         .with_override_rules(parsed.globs);
     scan_options.max_file_bytes = scanner_limit;

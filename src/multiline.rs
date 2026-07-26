@@ -191,7 +191,7 @@ fn finish_block(
             options.after_context,
             identity.lossy,
         ),
-        encoding: identity.encoding.clone(),
+        encoding: identity.encoding.to_string(),
         lossy: identity.lossy,
         archive: identity.archive,
     });

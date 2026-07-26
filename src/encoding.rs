@@ -6,6 +6,7 @@ use crate::options::{BinaryPolicy, EncodingMode, SearchMode, SearchOptions};
 use crate::query::{CompiledQuery, QueryCache};
 use crate::report::{SearchWarning, SearchWarningKind};
 use encoding_rs::{Encoding, UTF_8, UTF_16BE, UTF_16LE};
+use std::borrow::Cow;
 use std::sync::Arc;
 
 pub(crate) fn is_streaming_utf8(mode: &EncodingMode) -> Result<bool> {
@@ -36,7 +37,7 @@ pub(crate) fn search_complete_bytes(
 ) -> Result<()> {
     let encoding = resolve_encoding(&options.encoding, bytes)?;
     let (decoded, had_errors) = encoding.decode_with_bom_removal(bytes);
-    encoding.name().clone_into(&mut identity.encoding);
+    identity.encoding = Cow::Borrowed(encoding.name());
     identity.source_offset_base = (encoding == UTF_8)
         .then(|| u64::try_from(utf8_bom_len(bytes)).expect("UTF-8 BOM length fits in u64"));
     identity.lossy = had_errors;

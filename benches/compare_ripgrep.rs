@@ -4,7 +4,9 @@ use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
-use weavatrix_scan::{ContentValidationPolicy, ContentVisitControl, ScanOptions, Scanner};
+use weavatrix_scan::{
+    ContentDiscoveryMode, ContentValidationPolicy, ContentVisitControl, ScanOptions, Scanner,
+};
 use weavatrix_search::{
     CaseMode, IndexOptions, PersistentIndex, ResultMode, SearchMode, SearchOptions, SearchQuery,
     Searcher, WatchEvent, WatchEventKind,
@@ -27,6 +29,7 @@ struct Workload {
     search_mode: SearchMode,
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     if arguments
@@ -61,6 +64,15 @@ fn main() {
     if arguments.first().is_some_and(|argument| argument == "run") {
         let root = PathBuf::from(arguments.get(1).expect("run requires a path"));
         run(&root);
+        return;
+    }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "run-literal")
+    {
+        run_literal(Path::new(
+            arguments.get(1).expect("run-literal requires a path"),
+        ));
         return;
     }
     if arguments
@@ -144,9 +156,28 @@ fn prepare(root: &Path, files: usize) {
     fs::create_dir_all(root).expect("create benchmark root");
     fs::write(root.join(MARKER), files.to_string()).expect("write marker");
     fs::write(root.join(".gitignore"), "group0003/\n").expect("write ignore file");
-    for index in 0..files {
-        let directory = root.join(format!("group{:04}", index / 500));
-        fs::create_dir_all(&directory).expect("create benchmark directory");
+    let groups = files.div_ceil(500);
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(groups)
+        .min(16);
+    std::thread::scope(|scope| {
+        for worker in 0..workers {
+            scope.spawn(move || {
+                for group in (worker..groups).step_by(workers) {
+                    write_fixture_group(root, group, files);
+                }
+            });
+        }
+    });
+}
+
+fn write_fixture_group(root: &Path, group: usize, files: usize) {
+    let directory = root.join(format!("group{group:04}"));
+    fs::create_dir(&directory).expect("create benchmark directory");
+    let start = group * 500;
+    let end = start.saturating_add(500).min(files);
+    for index in start..end {
         let content = if index % 20 == 0 {
             format!("pub fn needle_target_{index}() {{}}\nlet item_{index} = 42;\n")
         } else {
@@ -247,6 +278,22 @@ fn run(root: &Path) {
     );
     profile_count(root, runs, warmups);
     profile_files(root, runs, warmups);
+}
+
+fn run_literal(root: &Path) {
+    assert!(root.join(MARKER).is_file(), "benchmark marker is missing");
+    profile(
+        root,
+        &Workload {
+            mode: "literal",
+            query: SearchQuery::literal("needle_target"),
+            patterns: &["needle_target"],
+            fixed: true,
+            search_mode: SearchMode::Line,
+        },
+        env_usize("WEAVATRIX_SEARCH_BENCH_RUNS", 11),
+        env_usize("WEAVATRIX_SEARCH_BENCH_WARMUPS", 2),
+    );
 }
 
 fn run_cli(root: &Path) {
@@ -511,8 +558,16 @@ fn benchmark_scan_options() -> ScanOptions {
     ScanOptions::default()
         .metadata_only()
         .selected_files_only()
-        .with_content_parallelism(if cfg!(windows) { 8 } else { 16 })
+        .with_content_parallelism(benchmark_content_parallelism())
+        .with_content_discovery(ContentDiscoveryMode::BufferedParallel)
         .with_content_validation(ContentValidationPolicy::Fast)
+}
+
+fn benchmark_content_parallelism() -> usize {
+    env_usize(
+        "WEAVATRIX_SEARCH_BENCH_THREADS",
+        if cfg!(windows) { 8 } else { 16 },
+    )
 }
 
 fn release_search_binary() -> PathBuf {
@@ -623,14 +678,7 @@ fn parse_json_matches(output: &[u8], ripgrep: bool) -> Vec<Signature> {
 
 fn scan_only(root: &Path) -> u64 {
     Scanner::new(root)
-        .options(
-            ScanOptions::default()
-                .metadata_only()
-                .selected_files_only()
-                .with_skip_hidden(true)
-                .with_content_parallelism(if cfg!(windows) { 8 } else { 16 })
-                .with_content_validation(ContentValidationPolicy::Fast),
-        )
+        .options(benchmark_scan_options().with_skip_hidden(true))
         .visit_content_streaming(|_| |_| ContentVisitControl::Continue)
         .expect("scan-only content visit")
         .completed
@@ -886,6 +934,7 @@ fn timed_weavatrix(
 
 fn weavatrix(root: &Path, query: SearchQuery, search_mode: SearchMode) -> (u64, Vec<Signature>) {
     let report = Searcher::new(root, query)
+        .scan_options(benchmark_scan_options().with_skip_hidden(true))
         .options(
             SearchOptions::default()
                 .with_case(CaseMode::Sensitive)

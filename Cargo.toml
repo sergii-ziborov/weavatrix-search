@@ -1,6 +1,6 @@
 [package]
 name = "weavatrix-search"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Fast, bounded repository content search built on Weavatrix Scan"
@@ -20,7 +20,7 @@ memchr = "2.8.3"
 regex-automata = "0.4.16"
 regex-syntax = "0.8.8"
 sha2 = "0.10.9"
-weavatrix-scan = "0.4.1"
+weavatrix-scan = "0.4.2"
 notify = { version = "8.2.0", optional = true }
 flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"], optional = true }
 tar = { version = "0.4.46", default-features = false, optional = true }

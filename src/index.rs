@@ -301,6 +301,7 @@ impl IndexBuilder {
             scan_options: ScanOptions::default()
                 .metadata_only()
                 .selected_files_only()
+                .with_content_discovery(weavatrix_scan::ContentDiscoveryMode::BufferedParallel)
                 .with_content_validation(weavatrix_scan::ContentValidationPolicy::Fast),
             index_options: IndexOptions::default(),
         }

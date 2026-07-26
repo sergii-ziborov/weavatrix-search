@@ -42,3 +42,12 @@ jobs:
           WEAVATRIX_SEARCH_BENCH_RUNS: 5
           WEAVATRIX_SEARCH_BENCH_WARMUPS: 1
         run: cargo +stable bench --bench compare_ripgrep -- run-index "${{ runner.temp }}/weavatrix-search-index-bench"
+      - name: Prepare 200k scale corpus
+        if: runner.os == 'Linux'
+        run: cargo +stable bench --bench compare_ripgrep -- prepare "${{ runner.temp }}/weavatrix-search-scale-bench" 200000
+      - name: Run 200k exact literal benchmark
+        if: runner.os == 'Linux'
+        env:
+          WEAVATRIX_SEARCH_BENCH_RUNS: 3
+          WEAVATRIX_SEARCH_BENCH_WARMUPS: 1
+        run: cargo +stable bench --bench compare_ripgrep -- run-literal "${{ runner.temp }}/weavatrix-search-scale-bench"
