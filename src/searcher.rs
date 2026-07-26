@@ -136,9 +136,11 @@ impl Searcher {
     /// configured policy.
     pub fn search(self) -> Result<SearchReport> {
         is_streaming_utf8(&self.options.encoding)?;
-        let query = Arc::new(self.query.compile(self.options.case)?);
-        let options = Arc::new(self.options);
+        let mut options = self.options;
+        let query = Arc::new(self.query.compile(options.case)?);
         let collector = Arc::new(Collector::new(&options));
+        options.file_evidence_visitor = None;
+        let options = Arc::new(options);
         let worker_query = Arc::clone(&query);
         let worker_options = Arc::clone(&options);
         let worker_collector = Arc::clone(&collector);
@@ -201,6 +203,7 @@ impl Searcher {
             }
         })?;
 
+        collector.clear_file_evidence_visitor();
         if let Some(error) = collector.take_fatal() {
             return Err(error);
         }
@@ -249,9 +252,11 @@ pub(crate) fn search_indexed(
     prefiltered: bool,
 ) -> Result<SearchReport> {
     is_streaming_utf8(&options.encoding)?;
+    let mut options = options;
     let query = Arc::new(query.compile(options.case)?);
-    let options = Arc::new(options);
     let collector = Arc::new(Collector::new(&options));
+    options.file_evidence_visitor = None;
+    let options = Arc::new(options);
     let next = Arc::new(AtomicUsize::new(0));
     let completed = Arc::new(
         (0..roots.len())
@@ -334,6 +339,7 @@ pub(crate) fn search_indexed(
             "an indexed-search worker panicked",
         ));
     }
+    collector.clear_file_evidence_visitor();
     if let Some(error) = collector.take_fatal() {
         return Err(error);
     }

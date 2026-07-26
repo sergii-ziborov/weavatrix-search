@@ -10,6 +10,8 @@ All notable changes to this project are documented here.
   matching lines, occurrences, encoding, lossy-decode, and archive evidence.
 - Add deterministic `Matched`/`All` evidence retention plus a concurrent,
   zero-retention visitor for Graph and hosted indexing consumers.
+- Release evidence visitor state before returning even when the shared Scan
+  worker pool retains an idle job closure.
 - Compute ordinary-file line and byte metrics in the existing content pass
   without a second filesystem read or whole-file allocation.
 - Preserve source evidence across multi-root, UTF-16, multiline, archive, and
