@@ -4,6 +4,27 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 0.2.0 - 2026-07-26
+
+- Add checksummed, revisioned persistent multi-root content indexes with atomic
+  replacement, platform-safe root codecs, and explicit resource limits.
+- Add conservative 512-bit per-file trigram Bloom filters with exact
+  verification through the normal literal/regex/encoding/archive pipeline.
+- Add bounded parallel index build/query APIs and ergonomic
+  `PersistentIndex::builder`.
+- Add native watcher-maintained `LiveIndex`, changed-path updates, debouncing,
+  bounded event queues, overflow rebuilds, generation/dirty/error health, and
+  clean-stop persistence.
+- Prevent partial mutation after failed incremental limits, correctly report
+  add/update/remove deltas, and avoid full-entry sorting for one-file updates.
+- Preserve lexical watcher roots beside canonical identity roots so deleted
+  Windows short/verbatim paths remain attributable.
+- Exclude indexes and atomic-write artifacts stored below a watched root to
+  prevent self-indexing and feedback loops.
+- Add CLI index build/reuse/rebuild/status/worker controls and index evidence
+  to text statistics and JSON summaries.
+- Add exact-parity persistent/live benchmarks at 20,000 and 200,000 files.
+
 ## 0.1.1 - 2026-07-26
 
 - Publish native Windows, macOS ARM64, and Ubuntu ripgrep parity medians.

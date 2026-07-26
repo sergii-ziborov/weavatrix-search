@@ -1,6 +1,6 @@
 [package]
 name = "weavatrix-search"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Fast, bounded repository content search built on Weavatrix Scan"
@@ -19,7 +19,9 @@ encoding_rs = "0.8.35"
 memchr = "2.8.3"
 regex-automata = "0.4.16"
 regex-syntax = "0.8.8"
+sha2 = "0.10.9"
 weavatrix-scan = "0.4.1"
+notify = { version = "8.2.0", optional = true }
 flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"], optional = true }
 tar = { version = "0.4.46", default-features = false, optional = true }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"], optional = true }
@@ -36,7 +38,7 @@ brotli = { version = "8.0.4", default-features = true }
 serde_json = "1.0.151"
 
 [features]
-default = ["archives"]
+default = ["archives", "live"]
 archives = [
     "dep:brotli-decompressor",
     "dep:bzip2-rs",
@@ -48,6 +50,7 @@ archives = [
     "dep:xz4rust",
     "dep:zip",
 ]
+live = ["dep:notify", "weavatrix-scan/notify"]
 
 [[bench]]
 name = "compare_ripgrep"

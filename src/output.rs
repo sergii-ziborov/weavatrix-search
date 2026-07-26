@@ -337,7 +337,7 @@ fn write_json_lines(report: &SearchReport, destination: &mut impl Write) -> io::
     }
     write!(
         destination,
-        "{{\"type\":\"summary\",\"data\":{{\"matching_lines\":{},\"occurrences\":{},\"files_with_matches\":{},\"files_searched\":{},\"bytes_searched\":{},\"truncated\":{},\"warnings_dropped\":{},\"roots\":",
+        "{{\"type\":\"summary\",\"data\":{{\"matching_lines\":{},\"occurrences\":{},\"files_with_matches\":{},\"files_searched\":{},\"bytes_searched\":{},\"truncated\":{},\"warnings_dropped\":{},\"backend\":\"{}\",\"index\":",
         report.matching_lines,
         report.occurrences,
         report.files_with_matches,
@@ -345,7 +345,22 @@ fn write_json_lines(report: &SearchReport, destination: &mut impl Write) -> io::
         report.bytes_searched,
         report.truncated,
         report.warnings_dropped,
+        match report.backend {
+            crate::SearchBackend::Filesystem => "filesystem",
+            crate::SearchBackend::PersistentIndex => "persistent-index",
+            crate::SearchBackend::LiveIndex => "live-index",
+        },
     )?;
+    if let Some(index) = &report.index {
+        write!(
+            destination,
+            "{{\"revision\":\"{}\",\"indexed_files\":{},\"candidate_files\":{},\"prefiltered\":{}}}",
+            index.revision, index.indexed_files, index.candidate_files, index.prefiltered
+        )?;
+    } else {
+        write!(destination, "null")?;
+    }
+    write!(destination, ",\"roots\":")?;
     write!(destination, "[")?;
     for (index, root) in report.roots.iter().enumerate() {
         if index > 0 {

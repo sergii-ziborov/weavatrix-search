@@ -7,12 +7,15 @@ ignore-aware discovery and one-pass content delivery.
 
 The crate does not invoke ripgrep or external processes at runtime. Ordinary
 UTF-8 files are searched as borrowed chunks without retaining whole files.
-Result memory is bounded independently of repository size, making the same API
-appropriate for repositories containing hundreds of thousands of files.
+Filesystem-search result memory is bounded independently of repository size.
+For repeated queries, an optional persistent/live index keeps an exact,
+revisioned content snapshot resident and uses conservative trigram Bloom
+filters only to reject impossible candidates; every candidate is still
+verified by the normal search engine.
 
 ## Status
 
-The `0.1.1` release contract covers:
+The `0.2.0` release contract covers:
 
 - ordered literal/regex query sets in one content pass;
 - line-streaming and explicitly bounded multiline matching;
@@ -30,6 +33,15 @@ The `0.1.1` release contract covers:
   evidence, only-matching and NUL-path output;
 - bounded, non-mutating replacement previews with numbered and named regex
   captures;
+- checksummed, platform-tagged, atomically replaced persistent multi-root
+  indexes with explicit entry/content/file-size limits;
+- bounded parallel index builds and queries, exact content hashes,
+  deterministic revisions, and no-false-negative literal/regex prefiltering;
+- native live updates with debouncing, bounded event queues, overflow-triggered
+  rebuilds, changed-path scans, observable dirty/generation/error state, and
+  clean-stop persistence;
+- safe handling for deleted Windows short/verbatim paths and for indexes stored
+  inside a watched repository, without self-indexing or watcher feedback loops;
 - output-parity and throughput benchmarks against ripgrep.
 
 ## Example
@@ -45,6 +57,49 @@ for found in report.matches {
     println!("{}:{}: {}", found.path, found.line_number, found.line);
 }
 # Ok::<(), weavatrix_search::Error>(())
+```
+
+Repeated queries use a discoverable builder and the same `SearchQuery` /
+`SearchOptions` contract:
+
+```rust,no_run
+use weavatrix_search::{PersistentIndex, SearchOptions, SearchQuery};
+
+let (index, build) = PersistentIndex::builder(".")
+    .build_and_save(".weavatrix/search.wvx")?;
+let report = index.search(
+    SearchQuery::literal("SelectionMatcher"),
+    SearchOptions::default(),
+)?;
+
+println!(
+    "{} indexed files, {} candidates",
+    build.files,
+    report.index.as_ref().unwrap().candidate_files
+);
+# Ok::<(), weavatrix_search::Error>(())
+```
+
+The default `live` feature adds native watchers. RAM updates are immediately
+queryable; clean shutdown persists one dirty snapshot. Consumers that prefer
+write-through durability can opt into `with_persist_each_batch(true)`.
+
+```rust,no_run
+# #[cfg(feature = "live")]
+# fn main() -> Result<(), weavatrix_search::Error> {
+use weavatrix_search::{LiveIndex, SearchOptions, SearchQuery};
+
+let live = LiveIndex::builder(".weavatrix/search.wvx", ".").start()?;
+let report = live.search(
+    SearchQuery::regex(r"TODO|FIXME"),
+    SearchOptions::default(),
+)?;
+println!("generation={}", live.status().generation);
+live.stop()?;
+# Ok(())
+# }
+# #[cfg(not(feature = "live"))]
+# fn main() {}
 ```
 
 Multiple patterns preserve input order for leftmost-first tie breaking and
@@ -79,6 +134,8 @@ files:
 weavatrix-search -F -C 2 "SelectionMatcher" .
 weavatrix-search -e "TODO" -e "FIXME\([^)]+\)" --json .
 weavatrix-search -F --heading --column --color auto "needle" ./app ./shared
+weavatrix-search -F --index .weavatrix/search.wvx "needle" .
+weavatrix-search --index-status .weavatrix/search.wvx
 weavatrix-search --replace '${last}, ${first}' \
   '(?<first>[A-Z][a-z]+) (?<last>[A-Z][a-z]+)' .
 ```
@@ -90,6 +147,11 @@ control, multiple roots, headings, color, line/column fields, only-matching
 records, NUL paths, statistics, and resource limits. Exit status is `0` for a
 match, `1` for no match, and `2` for usage, search, or output failure. Search
 roots remain native `OsString` paths; patterns and glob programs are UTF-8.
+`--index PATH` builds a missing index or reuses a validated snapshot;
+`--rebuild-index` refreshes it explicitly, `--index-workers` bounds build/query
+parallelism, and `--index-status` prints revision/file/byte/root evidence.
+Resident watcher maintenance is a library API so Weavatrix and hosted services
+can own process lifetime, cancellation, and health reporting.
 
 ## Execution model
 
@@ -102,6 +164,13 @@ weavatrix-scan
   -> streaming lines or bounded multiline decode
   -> context/encoding/archive/replacement evidence
   -> deterministic bounded collector
+
+persistent/live mode
+  -> one exact content snapshot + hashes + revision
+  -> 512-bit per-file trigram Bloom candidate rejection
+  -> bounded parallel verification by the same search engine
+  -> watcher plan -> changed paths only -> atomic RAM generation
+  -> optional write-through, otherwise one durable clean-stop snapshot
 ```
 
 Ordinary UTF-8 files are not copied into whole-file buffers. A whole file is
@@ -148,6 +217,9 @@ compression libraries, helper executables, or FFI bindings.
 | GZIP/BZip2/Zstd/LZ4/LZMA/XZ/Brotli | In-process pure Rust | Helpers may be external | Weavatrix has no process dependency |
 | XZ and TAR.XZ safety | Bounded dictionary/output; concatenated streams | Helper-dependent | Covered |
 | Multi-root invocation | Parallel API and CLI, stable root IDs | Multiple paths | Covered |
+| Persistent repeated-query index | Exact snapshot, checksum, hashes, revision, bounded candidate verification | No resident index in the `rg` CLI | Weavatrix-specific |
+| Native live maintenance | Debounced watcher deltas, overflow rebuild, health/generation state | Rerun traversal | Weavatrix-specific |
+| Changed-file content update | No full discovery for safe file events | New `rg` invocation traverses selection | Weavatrix-specific |
 
 Ripgrep still has more presentation-specialized modes, including passthrough,
 vimgrep formatting, byte offsets, and several flag combinations. Weavatrix
@@ -183,9 +255,36 @@ cache was warm.
 This does not claim that every repository or query is faster. Antivirus,
 storage, cache state, file size, output volume, encoding, and regex complexity
 can dominate. A true cold-cache number requires controlled cache eviction or a
-reboot and is deliberately not inferred from warm runs. Repeated subsecond
-queries over 200,000+ files require a persistent/live index; that belongs in a
-future indexing layer rather than weakening Scan's filesystem evidence.
+reboot and is deliberately not inferred from warm runs.
+
+### Persistent/live index benchmark
+
+The `0.2.0` index closes the repeated-query gap without weakening Scan's
+filesystem evidence. The benchmark first builds and atomically saves an exact
+snapshot, opens it with full format/checksum/revision validation, asserts exact
+normalized path/line/span parity against ripgrep, then times resident queries.
+The literal has 975 matches at 20k and 9,975 at 200k; in this synthetic corpus
+the Bloom filter admitted exactly those matching files.
+
+The 20k row uses seven measured interleaved runs after two warmups. The 200k
+resident query and changed-file update use seven runs after two warmups on the
+same disclosed Windows host. A first complete 200k ripgrep pass established
+exact parity, but repeated ripgrep timing was discarded because Defender was
+still processing the newly generated corpus; no contaminated competitor number
+is reported.
+
+| Corpus | Serialized index | Build | Validated open | Resident query | One-file live update | ripgrep process |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 20,000 files (19,502 indexed) | 3.21 MB | 578.5 ms | 55.6 ms | **15.7 ms** | **9.3 ms** | 785.1 ms |
+| 200,000 files (199,502 indexed) | 33.07 MB | not reported | **421.6 ms** | **110.4 ms** | **22.7 ms** | parity pass only |
+
+Thus even a fresh validated open plus query remained about 532 ms at 200k;
+an already resident query was about 110 ms. This is a scenario distinction,
+not a claim that the literal engine is universally 50x faster: the 20k
+resident result avoids process startup and repository traversal by design,
+while the ripgrep CLI repeats both. Index RAM intentionally retains exact
+source bytes plus paths, hashes, and Bloom metadata; use filesystem streaming
+when that resident-memory tradeoff is not appropriate.
 
 The native CI parity run uses a generated 5,500-file selected corpus, five
 measured runs after one warmup, ripgrep `15.2.0`, and the same normalized output
@@ -209,6 +308,8 @@ cargo bench --bench compare_ripgrep -- prepare <fixture-path> 20000
 cargo bench --bench compare_ripgrep -- verify <fixture-path> 20000
 WEAVATRIX_SEARCH_BENCH_WARMUPS=2 WEAVATRIX_SEARCH_BENCH_RUNS=7 \
   cargo bench --bench compare_ripgrep -- run-cli <fixture-path>
+WEAVATRIX_SEARCH_BENCH_WARMUPS=2 WEAVATRIX_SEARCH_BENCH_RUNS=7 \
+  cargo bench --bench compare_ripgrep -- run-index <fixture-path>
 ```
 
 Use `200000`, one warmup, and five runs for the scale row. In PowerShell, set
@@ -219,14 +320,15 @@ workloads while checking output parity.
 
 ## Footprint
 
-On the disclosed Windows GNU host, the release CLI measured 8,084,567 bytes
-with all archive formats and 6,492,855 bytes with default features disabled.
+On the disclosed Windows GNU host, the `0.2.0` release CLI measured 9,238,795
+bytes with archive and live-index support and 7,214,389 bytes with default
+features disabled.
 The installed ripgrep 15.2 binary measured 4,218,880 bytes and included PCRE2.
 These are uncompressed executable sizes for those exact builds, not portable
 package-size guarantees. Archive support is feature-gated when a smaller
-consumer is more important than in-process compressed search. Verified package
-size is 25 files, 227.0 KiB unpacked / 50.2 KiB compressed; dependency source
-is excluded.
+consumer is more important than in-process compressed search. Verified `0.2.0`
+package size is 28 files, 359.0 KiB unpacked / 77.5 KiB compressed; dependency
+source is excluded.
 
 ## Safety
 
@@ -239,6 +341,15 @@ initialization deliberately uses the decoder's checked reset path, which
 rejects windows above its 100 MiB ceiling. The implementation is checked for
 Windows, Linux, Intel macOS, and Apple Silicon macOS; the minimum supported
 Rust version is 1.88.
+
+Persistent indexes have explicit entry, content, serialized-size, path, and
+parallelism limits. Loads validate magic, format version, platform path codec,
+root/entry bounds, ordering, uniqueness, content revision, whole-file SHA-256,
+and trailing bytes before exposing a snapshot. Writes use a lock, a unique
+temporary file, `sync_all`, and atomic replacement with rollback. Watcher queue
+overflow, directory/ignore changes, and lost events conservatively trigger a
+full rebuild; a `.wvx` inside a watched root and its atomic-write artifacts are
+excluded from both discovery and watcher feedback.
 
 ## License
 

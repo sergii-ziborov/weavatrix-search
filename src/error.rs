@@ -37,10 +37,16 @@ pub enum Error {
         /// Limit detail.
         message: String,
     },
+    /// A persistent index is incompatible, corrupt, busy, or otherwise invalid.
+    Index {
+        /// Index path or logical index operation.
+        path: PathBuf,
+        /// Validation or operation detail.
+        message: String,
+    },
 }
 
 impl Error {
-    #[cfg(feature = "archives")]
     pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {
             path: path.into(),
@@ -57,6 +63,13 @@ impl Error {
 
     pub(crate) fn limit(path: impl Into<String>, message: impl Into<String>) -> Self {
         Self::Limit {
+            path: path.into(),
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn index(path: impl Into<PathBuf>, message: impl Into<String>) -> Self {
+        Self::Index {
             path: path.into(),
             message: message.into(),
         }
@@ -79,6 +92,9 @@ impl fmt::Display for Error {
             Self::Limit { path, message } => {
                 write!(formatter, "search limit reached for {path}: {message}")
             }
+            Self::Index { path, message } => {
+                write!(formatter, "persistent index {}: {message}", path.display())
+            }
         }
     }
 }
@@ -92,7 +108,8 @@ impl StdError for Error {
             Self::EmptyQuery
             | Self::InvalidEncoding(_)
             | Self::Archive { .. }
-            | Self::Limit { .. } => None,
+            | Self::Limit { .. }
+            | Self::Index { .. } => None,
         }
     }
 }

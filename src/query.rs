@@ -6,6 +6,7 @@ use regex_automata::Input;
 use regex_automata::meta::{Cache, Regex};
 use regex_automata::util::captures::Captures;
 use regex_automata::util::syntax;
+use regex_syntax::hir::{Hir, HirKind};
 use std::ops::Range;
 
 /// A compiled-on-execution repository query.
@@ -94,6 +95,29 @@ impl SearchQuery {
             }
         }
     }
+
+    pub(crate) fn prefilter_trigrams(&self, case: CaseMode) -> Option<Vec<Vec<u32>>> {
+        match self {
+            Self::Literal(pattern) => {
+                sensitive_trigrams(pattern, case).map(|trigrams| vec![trigrams])
+            }
+            Self::Regex(pattern) => {
+                if is_case_insensitive(pattern, case) {
+                    return None;
+                }
+                let hir = regex_syntax::Parser::new().parse(pattern).ok()?;
+                let literal = longest_mandatory_literal(&hir)?;
+                trigrams(&literal).map(|trigrams| vec![trigrams])
+            }
+            Self::Any(queries) => {
+                let mut alternatives = Vec::new();
+                for query in queries {
+                    alternatives.extend(query.prefilter_trigrams(case)?);
+                }
+                (!alternatives.is_empty()).then_some(alternatives)
+            }
+        }
+    }
 }
 
 enum PreparedPattern {
@@ -116,6 +140,46 @@ fn is_case_insensitive(pattern: &str, case: CaseMode) -> bool {
         CaseMode::Insensitive => true,
         CaseMode::Smart => !pattern.chars().any(char::is_uppercase),
     }
+}
+
+fn sensitive_trigrams(pattern: &str, case: CaseMode) -> Option<Vec<u32>> {
+    (!is_case_insensitive(pattern, case))
+        .then_some(pattern.as_bytes())
+        .and_then(trigrams)
+}
+
+fn longest_mandatory_literal(hir: &Hir) -> Option<Vec<u8>> {
+    match hir.kind() {
+        HirKind::Literal(literal) => Some(literal.0.to_vec()),
+        HirKind::Capture(capture) => longest_mandatory_literal(&capture.sub),
+        HirKind::Repetition(repetition) if repetition.min > 0 => {
+            longest_mandatory_literal(&repetition.sub)
+        }
+        HirKind::Concat(expressions) => expressions
+            .iter()
+            .filter_map(longest_mandatory_literal)
+            .max_by_key(Vec::len),
+        HirKind::Empty
+        | HirKind::Class(_)
+        | HirKind::Look(_)
+        | HirKind::Repetition(_)
+        | HirKind::Alternation(_) => None,
+    }
+}
+
+fn trigrams(bytes: &[u8]) -> Option<Vec<u32>> {
+    if bytes.len() < 3 {
+        return None;
+    }
+    let mut values = bytes
+        .windows(3)
+        .map(|window| {
+            (u32::from(window[0]) << 16) | (u32::from(window[1]) << 8) | u32::from(window[2])
+        })
+        .collect::<Vec<_>>();
+    values.sort_unstable();
+    values.dedup();
+    Some(values)
 }
 
 pub(crate) enum CompiledQuery {

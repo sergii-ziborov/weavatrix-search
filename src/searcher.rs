@@ -5,11 +5,16 @@ use crate::error::{Error, Result};
 use crate::line_search::{LineSearcher, SearchIdentity};
 use crate::options::{BinaryPolicy, EncodingMode, SearchErrorPolicy, SearchMode, SearchOptions};
 use crate::query::{CompiledQuery, QueryCache, SearchQuery};
-use crate::report::{SearchReport, SearchWarning, SearchWarningKind};
+use crate::report::{
+    IndexSearchEvidence, SearchBackend, SearchReport, SearchWarning, SearchWarningKind,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use weavatrix_scan::{
-    ContentValidationPolicy, ContentVisitControl, ContentVisitEvent, MultiScanner, ScanOptions,
+    ContentValidationPolicy, ContentVisitControl, ContentVisitEvent, ContentVisitMode,
+    ContentVisitReport, MultiContentVisitReport, MultiScanner, ScanCacheStats, ScanOptions,
+    ScanTermination,
 };
 
 /// Configures and executes a search across one or more repository roots.
@@ -170,6 +175,8 @@ impl Searcher {
         let files_searched = scan.reports.iter().map(|report| report.completed).sum();
         let bytes_searched = scan.reports.iter().map(|report| report.bytes_emitted).sum();
         Ok(SearchReport {
+            backend: crate::report::SearchBackend::Filesystem,
+            index: None,
             roots: report_roots,
             result_mode: options.result_mode,
             matches: collected.matches,
@@ -185,6 +192,173 @@ impl Searcher {
             scan,
         })
     }
+}
+
+pub(crate) struct IndexedContent<'a> {
+    pub(crate) root_index: usize,
+    pub(crate) path: &'a str,
+    pub(crate) bytes: &'a [u8],
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
+pub(crate) fn search_indexed(
+    roots: Vec<PathBuf>,
+    files: &[IndexedContent<'_>],
+    query: &SearchQuery,
+    options: SearchOptions,
+    parallelism: usize,
+    revision: String,
+    indexed_files: u64,
+    candidate_files: u64,
+    prefiltered: bool,
+) -> Result<SearchReport> {
+    is_streaming_utf8(&options.encoding)?;
+    let query = Arc::new(query.compile(options.case)?);
+    let options = Arc::new(options);
+    let collector = Arc::new(Collector::new(
+        options.max_results,
+        options.max_warnings,
+        options.result_mode,
+    ));
+    let next = Arc::new(AtomicUsize::new(0));
+    let completed = Arc::new(
+        (0..roots.len())
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<_>>(),
+    );
+    let emitted = Arc::new(
+        (0..roots.len())
+            .map(|_| AtomicU64::new(0))
+            .collect::<Vec<_>>(),
+    );
+    let discovered = files
+        .iter()
+        .fold(vec![0_u64; roots.len()], |mut counts, file| {
+            if let Some(count) = counts.get_mut(file.root_index) {
+                *count = count.saturating_add(1);
+            }
+            counts
+        });
+    let workers = parallelism.min(files.len().max(1));
+    let panicked = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let query = Arc::clone(&query);
+            let options = Arc::clone(&options);
+            let collector = Arc::clone(&collector);
+            let next = Arc::clone(&next);
+            let completed = Arc::clone(&completed);
+            let emitted = Arc::clone(&emitted);
+            handles.push(scope.spawn(move || {
+                let mut query_cache = query.create_cache();
+                loop {
+                    if collector.should_quit() {
+                        break;
+                    }
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(file) = files.get(index) else {
+                        break;
+                    };
+                    let expected_bytes = u64::try_from(file.bytes.len()).unwrap_or(u64::MAX);
+                    let mut processor = FileProcessor::new(
+                        SearchIdentity {
+                            root_index: file.root_index,
+                            path: file.path.to_owned(),
+                            encoding: "UTF-8".to_owned(),
+                            archive: false,
+                            source_offset_base: Some(0),
+                            lossy: false,
+                        },
+                        expected_bytes,
+                        Arc::clone(&query),
+                        Arc::clone(&options),
+                        Arc::clone(&collector),
+                    );
+                    if let Err(error) = processor
+                        .push(file.bytes, &mut query_cache)
+                        .and_then(|()| processor.finish(&mut query_cache))
+                    {
+                        handle_error(&collector, &options, error);
+                    }
+                    if let (Some(count), Some(bytes)) =
+                        (completed.get(file.root_index), emitted.get(file.root_index))
+                    {
+                        count.fetch_add(1, Ordering::Relaxed);
+                        bytes.fetch_add(expected_bytes, Ordering::Relaxed);
+                    }
+                }
+            }));
+        }
+        let mut panicked = false;
+        for handle in handles {
+            panicked |= handle.join().is_err();
+        }
+        panicked
+    });
+    if panicked {
+        return Err(Error::index(
+            "<memory>",
+            "an indexed-search worker panicked",
+        ));
+    }
+    if let Some(error) = collector.take_fatal() {
+        return Err(error);
+    }
+    let stopped = collector.should_quit();
+    let collected = collector.finish();
+    let reports = roots
+        .iter()
+        .enumerate()
+        .map(|(root_index, root)| {
+            let completed = completed[root_index].load(Ordering::Relaxed);
+            let bytes = emitted[root_index].load(Ordering::Relaxed);
+            ContentVisitReport {
+                mode: ContentVisitMode::Streaming,
+                root: root.clone(),
+                discovered: discovered[root_index],
+                completed,
+                opened: completed,
+                chunks: completed,
+                bytes_read: bytes,
+                bytes_emitted: bytes,
+                consumer_skipped: 0,
+                stopped,
+                skipped: Vec::new(),
+                warnings: Vec::new(),
+                ignore_sources: Vec::new(),
+                revision: revision.clone(),
+                complete: !stopped,
+                termination: stopped.then_some(ScanTermination::Cancelled),
+                portable: false,
+                cache: ScanCacheStats::default(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let files_searched = reports.iter().map(|report| report.completed).sum();
+    let bytes_searched = reports.iter().map(|report| report.bytes_emitted).sum();
+    Ok(SearchReport {
+        backend: SearchBackend::PersistentIndex,
+        index: Some(IndexSearchEvidence {
+            revision,
+            indexed_files,
+            candidate_files,
+            prefiltered,
+        }),
+        roots,
+        result_mode: options.result_mode,
+        matches: collected.matches,
+        matching_lines: collected.matching_lines,
+        occurrences: collected.occurrences,
+        files_with_matches: collected.files_with_matches,
+        files_searched,
+        bytes_searched,
+        truncated: collected.truncated,
+        warnings: collected.warnings,
+        matched_files: collected.files,
+        warnings_dropped: collected.warnings_dropped,
+        scan: MultiContentVisitReport { reports },
+    })
 }
 
 fn scanner_file_limit(options: &SearchOptions) -> u64 {
@@ -441,7 +615,7 @@ fn handle_error(collector: &Collector, options: &SearchOptions, error: Error) {
                 path.to_string_lossy().into_owned(),
                 SearchWarningKind::Archive,
             ),
-            Error::EmptyQuery | Error::Regex(_) | Error::Scan(_) => {
+            Error::EmptyQuery | Error::Regex(_) | Error::Scan(_) | Error::Index { .. } => {
                 ("<search>".to_owned(), SearchWarningKind::Archive)
             }
         };

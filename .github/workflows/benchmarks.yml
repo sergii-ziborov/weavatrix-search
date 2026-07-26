@@ -9,6 +9,7 @@ on:
       - src/**
       - Cargo.toml
       - Cargo.lock
+      - README.md
 
 permissions:
   contents: read
@@ -34,3 +35,10 @@ jobs:
           WEAVATRIX_SEARCH_BENCH_RUNS: 5
           WEAVATRIX_SEARCH_BENCH_WARMUPS: 1
         run: cargo +stable bench --bench compare_ripgrep
+      - name: Prepare persistent-index corpus
+        run: cargo +stable bench --bench compare_ripgrep -- prepare "${{ runner.temp }}/weavatrix-search-index-bench" 6000
+      - name: Run persistent/live index benchmark
+        env:
+          WEAVATRIX_SEARCH_BENCH_RUNS: 5
+          WEAVATRIX_SEARCH_BENCH_WARMUPS: 1
+        run: cargo +stable bench --bench compare_ripgrep -- run-index "${{ runner.temp }}/weavatrix-search-index-bench"

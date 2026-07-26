@@ -7,12 +7,13 @@ use std::process::ExitCode;
 use std::time::Instant;
 use weavatrix_scan::{ContentValidationPolicy, ScanOptions};
 use weavatrix_search::{
-    CaseMode, ColorChoice, EncodingMode, OutputFormat, OutputOptions, ResultMode, SearchMode,
-    SearchOptions, SearchQuery, Searcher, write_report_with, write_warnings,
+    CaseMode, ColorChoice, EncodingMode, IndexOptions, OutputFormat, OutputOptions,
+    PersistentIndex, ResultMode, SearchMode, SearchOptions, SearchQuery, Searcher,
+    write_report_with, write_warnings,
 };
 
 const HELP: &str = "\
-weavatrix-search 0.1.0
+weavatrix-search
 Fast, bounded, ignore-aware repository content search
 
 USAGE:
@@ -42,6 +43,10 @@ OPTIONS:
         --color WHEN              auto, always, or never
     -0, --null                    NUL-terminate paths
         --stats                   Print elapsed/search counters to stderr
+        --index PATH              Open, or create, a persistent content index
+        --rebuild-index           Replace --index before searching
+        --index-workers NUM       Bound index build/query workers
+        --index-status PATH       Print validated index health and exit
     -r, --replace TEMPLATE        Preview replacement; never writes files
     -g, --glob GLOB               Include GLOB, or exclude !GLOB (repeatable)
         --encoding LABEL          auto, utf-8, utf-16le, utf-16be, or label
@@ -72,6 +77,7 @@ fn main() -> ExitCode {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<ExitCode, String> {
     let parsed = Arguments::parse(arguments)?;
     if let Some(action) = parsed.action {
@@ -80,6 +86,22 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<ExitCode, String
             ImmediateAction::Version => {
                 println!("weavatrix-search {}", env!("CARGO_PKG_VERSION"));
             }
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    if let Some(path) = &parsed.index_status {
+        let index = PersistentIndex::open(path, IndexOptions::default())
+            .map_err(|error| error.to_string())?;
+        let status = index.status();
+        println!(
+            "revision={} files={} bytes={} roots={}",
+            status.revision,
+            status.files,
+            status.content_bytes,
+            status.roots.len()
+        );
+        for (root_index, root) in status.roots.iter().enumerate() {
+            println!("root[{root_index}]={}", root.display());
         }
         return Ok(ExitCode::SUCCESS);
     }
@@ -119,16 +141,37 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<ExitCode, String
     scan_options.max_file_bytes = scanner_limit;
 
     let started = Instant::now();
-    let mut roots = parsed.roots.into_iter();
-    let root = roots
-        .next()
-        .expect("argument parsing always supplies one root");
-    let report = Searcher::new(root, query)
-        .extend_roots(roots)
-        .options(options)
-        .scan_options(scan_options)
-        .search()
-        .map_err(|error| error.to_string())?;
+    let report = if let Some(index_path) = parsed.index {
+        let index_options = IndexOptions::default().with_parallelism(parsed.index_workers);
+        let index = if parsed.rebuild_index || !index_path.exists() {
+            PersistentIndex::build_and_save(&index_path, parsed.roots, scan_options, index_options)
+                .map_err(|error| error.to_string())?
+                .0
+        } else {
+            let index = PersistentIndex::open(&index_path, index_options)
+                .map_err(|error| error.to_string())?;
+            if parsed.roots_explicit && !same_roots(index.roots(), &parsed.roots) {
+                return Err(
+                    "explicit PATH arguments differ from the index; use --rebuild-index".to_owned(),
+                );
+            }
+            index
+        };
+        index
+            .search(query, options)
+            .map_err(|error| error.to_string())?
+    } else {
+        let mut roots = parsed.roots.into_iter();
+        let root = roots
+            .next()
+            .expect("argument parsing always supplies one root");
+        Searcher::new(root, query)
+            .extend_roots(roots)
+            .options(options)
+            .scan_options(scan_options)
+            .search()
+            .map_err(|error| error.to_string())?
+    };
     let color = match parsed.color {
         CliColor::Auto if io::stdout().is_terminal() => ColorChoice::Always,
         CliColor::Always => ColorChoice::Always,
@@ -148,12 +191,19 @@ fn run(arguments: impl IntoIterator<Item = OsString>) -> Result<ExitCode, String
         write_warnings(&report, io::stderr().lock()).map_err(|error| error.to_string())?;
     }
     if parsed.stats {
+        let index_stats = report.index.as_ref().map_or_else(String::new, |index| {
+            format!(
+                ", indexed {}, candidates {}, revision {}",
+                index.indexed_files, index.candidate_files, index.revision
+            )
+        });
         eprintln!(
-            "weavatrix-search: {} files, {} bytes, {} matching lines, {:.3} ms",
+            "weavatrix-search: {} files, {} bytes, {} matching lines, {:.3} ms{}",
             report.files_searched,
             report.bytes_searched,
             report.matching_lines,
-            started.elapsed().as_secs_f64() * 1_000.0
+            started.elapsed().as_secs_f64() * 1_000.0,
+            index_stats,
         );
     }
     Ok(if report.files_with_matches > 0 {
@@ -194,6 +244,11 @@ struct Arguments {
     max_multiline_bytes: u64,
     max_replacement_bytes: usize,
     max_decoder_memory_bytes: usize,
+    index: Option<PathBuf>,
+    rebuild_index: bool,
+    index_workers: usize,
+    index_status: Option<PathBuf>,
+    roots_explicit: bool,
     action: Option<ImmediateAction>,
     roots: Vec<PathBuf>,
 }
@@ -248,6 +303,11 @@ impl Arguments {
             max_multiline_bytes: defaults.max_multiline_bytes,
             max_replacement_bytes: defaults.max_replacement_bytes,
             max_decoder_memory_bytes: defaults.archives.max_decoder_memory_bytes,
+            index: None,
+            rebuild_index: false,
+            index_workers: IndexOptions::default().search_parallelism,
+            index_status: None,
+            roots_explicit: false,
             action: None,
             roots: Vec::new(),
         };
@@ -302,6 +362,10 @@ impl Arguments {
             "-o" | "--only-matching" => self.only_matching = true,
             "-0" | "--null" => self.null = true,
             "--stats" => self.stats = true,
+            "--index" => self.index = Some(next_path(arguments, argument)?),
+            "--rebuild-index" => self.rebuild_index = true,
+            "--index-workers" => self.index_workers = next_number(arguments, argument)?,
+            "--index-status" => self.index_status = Some(next_path(arguments, argument)?),
             "--hidden" => self.hidden = true,
             "--no-archives" => self.archives = false,
             "-e" | "--regexp" => self.patterns.push(next_string(arguments, argument)?),
@@ -371,6 +435,9 @@ impl Arguments {
             "--max-decoder-memory-bytes" => {
                 self.max_decoder_memory_bytes = parse_number(name, value)?;
             }
+            "--index" => self.index = Some(PathBuf::from(value)),
+            "--index-workers" => self.index_workers = parse_number(name, value)?,
+            "--index-status" => self.index_status = Some(PathBuf::from(value)),
             _ => return Err(format!("unknown option {name}; use --help")),
         }
         Ok(())
@@ -387,7 +454,7 @@ impl Arguments {
     }
 
     fn finish(mut self) -> Result<Self, String> {
-        if self.action.is_some() {
+        if self.action.is_some() || self.index_status.is_some() {
             return Ok(self);
         }
         if self.patterns.is_empty() {
@@ -404,8 +471,12 @@ impl Arguments {
         if self.positional.is_empty() {
             self.roots.push(PathBuf::from("."));
         } else {
+            self.roots_explicit = true;
             self.roots
                 .extend(self.positional.drain(..).map(PathBuf::from));
+        }
+        if self.rebuild_index && self.index.is_none() {
+            return Err("--rebuild-index requires --index PATH".to_owned());
         }
         if self.replacement.is_some() && self.result_mode != ResultMode::Matches {
             return Err("--replace requires match output mode".to_owned());
@@ -452,6 +523,16 @@ fn next_string(
         .map_err(|_| format!("{option} value must be valid UTF-8"))
 }
 
+fn next_path(
+    arguments: &mut impl Iterator<Item = OsString>,
+    option: &str,
+) -> Result<PathBuf, String> {
+    arguments
+        .next()
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("{option} requires a path"))
+}
+
 fn next_number<T>(arguments: &mut impl Iterator<Item = OsString>, option: &str) -> Result<T, String>
 where
     T: std::str::FromStr,
@@ -467,6 +548,15 @@ where
     value
         .parse()
         .map_err(|_| format!("{option} requires a non-negative integer"))
+}
+
+fn same_roots(indexed: &[PathBuf], requested: &[PathBuf]) -> bool {
+    indexed.len() == requested.len()
+        && indexed.iter().zip(requested).all(|(left, right)| {
+            let left = left.canonicalize().unwrap_or_else(|_| left.clone());
+            let right = right.canonicalize().unwrap_or_else(|_| right.clone());
+            left == right
+        })
 }
 
 fn parse_encoding(value: &str) -> Result<EncodingMode, String> {

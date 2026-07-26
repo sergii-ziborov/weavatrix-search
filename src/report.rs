@@ -1,3 +1,27 @@
+/// Backend that supplied bytes for one search execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchBackend {
+    /// Ignore-aware filesystem traversal and one-pass content delivery.
+    Filesystem,
+    /// An opened persistent content index.
+    PersistentIndex,
+    /// A resident index maintained from filesystem watcher events.
+    LiveIndex,
+}
+
+/// Evidence for a persistent or live index query.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexSearchEvidence {
+    /// Deterministic revision of indexed roots, paths, and content hashes.
+    pub revision: String,
+    /// Selected files stored in the complete index.
+    pub indexed_files: u64,
+    /// Files retained after the conservative trigram prefilter.
+    pub candidate_files: u64,
+    /// Whether the prefilter could safely narrow this query.
+    pub prefiltered: bool,
+}
+
 /// A half-open byte range in the decoded matching block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MatchSpan {
@@ -98,6 +122,10 @@ pub struct MatchedFile {
 /// Deterministic matches, aggregate counters, warnings, and scan evidence.
 #[derive(Debug)]
 pub struct SearchReport {
+    /// Content backend used for this execution.
+    pub backend: SearchBackend,
+    /// Index evidence when `backend` is not [`SearchBackend::Filesystem`].
+    pub index: Option<IndexSearchEvidence>,
     /// Search roots in insertion order.
     pub roots: Vec<std::path::PathBuf>,
     /// Output mode used to construct this report.
