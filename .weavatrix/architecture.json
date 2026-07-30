@@ -1,0 +1,106 @@
+{
+  "architectureContractV": 1,
+  "name": "Weavatrix Search modular query engine",
+  "style": "ports-and-adapters",
+  "enforcement": "strict",
+  "components": [
+    {
+      "id": "model",
+      "name": "Query, option, report, and error model",
+      "paths": [
+        "src/error.rs",
+        "src/options",
+        "src/query",
+        "src/report.rs"
+      ]
+    },
+    {
+      "id": "matching",
+      "name": "Bounded matching engine",
+      "paths": [
+        "src/encoding.rs",
+        "src/collector",
+        "src/line_search",
+        "src/multiline"
+      ]
+    },
+    {
+      "id": "application",
+      "name": "Search and index use cases",
+      "paths": ["src/archive", "src/index", "src/live_index", "src/searcher"]
+    },
+    {
+      "id": "output",
+      "name": "Result rendering adapter",
+      "paths": ["src/output"]
+    },
+    {
+      "id": "facade",
+      "name": "Public crate facade",
+      "paths": ["src/lib.rs"]
+    },
+    {
+      "id": "cli",
+      "name": "Command-line adapter",
+      "paths": ["src/bin"]
+    },
+    {
+      "id": "verification",
+      "name": "Tests and benchmarks",
+      "paths": ["tests", "benches"]
+    }
+  ],
+  "dependencyRules": [
+    {
+      "id": "model-is-inward",
+      "action": "forbid",
+      "from": ["model"],
+      "to": ["matching", "application", "output", "facade", "cli"],
+      "kinds": ["imports", "re_exports", "depends_on"]
+    },
+    {
+      "id": "matching-is-storage-independent",
+      "action": "forbid",
+      "from": ["matching"],
+      "to": ["application", "output", "facade", "cli"],
+      "kinds": ["imports", "re_exports", "depends_on"]
+    },
+    {
+      "id": "application-does-not-depend-on-adapters",
+      "action": "forbid",
+      "from": ["application"],
+      "to": ["output", "facade", "cli"],
+      "kinds": ["imports", "re_exports", "depends_on"]
+    },
+    {
+      "id": "output-does-not-own-application",
+      "action": "forbid",
+      "from": ["output"],
+      "to": ["facade", "cli"],
+      "kinds": ["imports", "re_exports", "depends_on"]
+    },
+    {
+      "id": "facade-does-not-depend-on-cli",
+      "action": "forbid",
+      "from": ["facade"],
+      "to": ["cli"],
+      "kinds": ["imports", "re_exports", "depends_on"]
+    }
+  ],
+  "budgets": {
+    "runtimeCycles": 0,
+    "maxFileLoc": 300,
+    "maxFunctionLoc": 100
+  },
+  "technologies": {
+    "required": ["rust"],
+    "forbidden": ["unsafe-rust"]
+  },
+  "exceptions": [],
+  "ratchet": {
+    "baseline": {
+      "fingerprints": [],
+      "metrics": {}
+    }
+  }
+}

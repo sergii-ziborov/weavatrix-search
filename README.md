@@ -15,7 +15,7 @@ verified by the normal search engine.
 
 ## Status
 
-The `0.3.0` release contract covers:
+The `0.3.1` release contract covers:
 
 - adaptive discovery: low-latency buffered traversal for repository roots and
   ordinary Unix directories, plus overlapped constant-memory streaming for
@@ -223,6 +223,35 @@ buffered only for multiline mode, non-UTF-8 decoding, or archive inspection,
 and those paths have explicit size bounds. Match records, per-file summaries,
 and warnings have separate deterministic limits; non-quiet aggregate match
 counts remain complete when records are omitted.
+
+## Enforced modular architecture
+
+The crate is organized as a ports-and-adapters search pipeline:
+
+```text
+model
+  query · options · reports · errors
+    |
+matching engine
+  encoding · line/multiline matchers · bounded collector
+    |
+application
+  filesystem search · archive dispatch · persistent/live index
+    |
+output adapters
+  deterministic text · JSON Lines
+    |
+facade and CLI
+```
+
+`.weavatrix/architecture.json` enforces those directions against the crate's
+own evidence graph. Release gates require zero runtime cycles, no baseline or
+exceptions, files no larger than 300 physical lines, functions no larger than
+100 physical lines, and one unambiguous `foo/mod.rs` module form.
+
+The internal code does not import public facade re-exports back into lower
+layers. This keeps the public API stable without turning `lib.rs` into a hidden
+dependency hub.
 
 ## Package boundary
 

@@ -1,6 +1,6 @@
 [package]
 name = "weavatrix-search"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Fast, bounded repository content search built on Weavatrix Scan"

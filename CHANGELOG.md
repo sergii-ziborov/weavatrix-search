@@ -4,6 +4,18 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+## 0.3.1 - 2026-07-30
+
+- split archive, collector, index, live-index, matching, options, output,
+  query, search orchestration, and CLI code into focused domain modules;
+- enforce a strict ports-and-adapters contract with zero runtime cycles,
+  300-line file and 100-line function limits, no exceptions, and no ambiguous
+  Rust module layouts;
+- replace internal facade imports with direct layer dependencies while
+  preserving the public API and search behavior;
+- split integration and benchmark harnesses by scenario so verification code
+  follows the same maintainability budget as production code.
+
 ## 0.3.0 - 2026-07-26
 
 - Add `SourceFileEvidence` with root/path identity, source bytes, logical lines,
